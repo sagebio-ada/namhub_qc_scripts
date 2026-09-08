@@ -51,7 +51,8 @@ def qc_processed_sample(
     if missing:
         add("processed_completeness", "FAIL", f"Missing role(s) {sorted(missing)} for sample {sample_id}")
         return findings
-    add("processed_completeness", "PASS", "barcodes/features/matrix all present")
+    present = ", ".join(f"{role}={entity_id}" for role, entity_id in sorted(files.items()))
+    add("processed_completeness", "PASS", f"barcodes/features/matrix all present: {present}")
 
     sample_dir = work_dir / sample_id
     sample_dir.mkdir(parents=True, exist_ok=True)
