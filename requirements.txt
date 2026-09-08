@@ -1,0 +1,9 @@
+synapseclient
+requests
+numpy
+scipy
+
+# scrnaseq_qc_pipeline also needs these external tools on PATH, none of which
+# are pip-installable -- see scrnaseq_qc_pipeline/README.md for install steps:
+#   fastqc, fq (stjude-rust-labs), kraken2 (+ a local Kraken2 database)
+#   geo-synapse: pip install git+https://github.com/sagebio-ada/geo_dataset_creation.git
