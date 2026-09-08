@@ -9,7 +9,11 @@ from typing import Dict, Iterable, List, Optional, Union
 Finding = Dict[str, str]
 
 REPORT_FIELDS = ["sample", "entity_id", "check", "status", "detail"]
-_SEVERITY_RANK = {"FAIL": 0, "WARN": 1, "PASS": 2}
+# INFO is for findings that report a real number with no pass/fail judgment
+# attached (no verified criterion, or a criterion we didn't trust enough to
+# assert as a verdict) -- it's distinct from PASS, which means a check was
+# actually applied and it succeeded. Don't reuse PASS for "here's some data."
+_SEVERITY_RANK = {"FAIL": 0, "WARN": 1, "PASS": 2, "INFO": 3}
 
 
 def first_value(raw: Optional[Union[list, tuple, str]]) -> str:
@@ -38,4 +42,5 @@ def summarize(findings: List[Finding]) -> str:
     n_fail = sum(1 for f in findings if f["status"] == "FAIL")
     n_warn = sum(1 for f in findings if f["status"] == "WARN")
     n_pass = sum(1 for f in findings if f["status"] == "PASS")
-    return f"{n_pass} PASS, {n_warn} WARN, {n_fail} FAIL"
+    n_info = sum(1 for f in findings if f["status"] == "INFO")
+    return f"{n_pass} PASS, {n_warn} WARN, {n_fail} FAIL, {n_info} INFO"

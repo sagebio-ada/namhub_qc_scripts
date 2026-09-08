@@ -92,28 +92,29 @@ def qc_processed_sample(
     genes_per_cell = np.asarray((mat > 0).sum(axis=0)).ravel()
     nonzero_counts = counts_per_cell[counts_per_cell > 0]
     nonzero_genes = genes_per_cell[genes_per_cell > 0]
-    add("matrix_metrics", "PASS" if len(nonzero_counts) else "WARN",
+    # INFO for the normal case (just reporting numbers); WARN is a real flag --
+    # zero non-empty barcodes in the whole matrix is a genuine integrity problem,
+    # not a threshold call.
+    add("matrix_metrics", "INFO" if len(nonzero_counts) else "WARN",
         f"median UMI/cell={np.median(nonzero_counts) if len(nonzero_counts) else 0:.0f}, "
         f"median genes/cell={np.median(nonzero_genes) if len(nonzero_genes) else 0:.0f}, "
         f"barcodes_with_zero_counts={(counts_per_cell == 0).sum()}/{len(counts_per_cell)}, nnz={mat.nnz}")
 
+    # No pass/fail judgment -- what fraction of empty barcodes is "expected"
+    # for a raw vs. filtered matrix depends on the dataset and isn't something
+    # we've validated a cutoff for. Report the fraction and the declared class
+    # side by side; let whoever reads the report judge whether they agree.
     frac_empty = (counts_per_cell == 0).sum() / max(len(counts_per_cell), 1)
-    is_raw = cellranger_output_class.strip().lower() == "raw_feature_bc_matrix"
-    if not is_raw and frac_empty > 0.5:
-        add("empty_barcode_check", "WARN",
-            f"{frac_empty:.0%} of barcodes have zero counts, unexpected for a filtered matrix "
-            f"(CellrangerOutputClass={cellranger_output_class!r})")
-    elif is_raw and frac_empty < 0.5:
-        add("empty_barcode_check", "WARN",
-            f"Only {frac_empty:.0%} of barcodes have zero counts, unexpected for a raw/unfiltered "
-            f"matrix (CellrangerOutputClass={cellranger_output_class!r})")
+    add("empty_barcode_check", "INFO",
+        f"{frac_empty:.1%} of {len(counts_per_cell)} barcodes have zero counts "
+        f"(declared CellrangerOutputClass={cellranger_output_class!r})")
 
     try:
         mito_frac = _mito_fraction(paths["features"], mat)
         if mito_frac is not None:
             nz_mito = mito_frac[counts_per_cell > 0]
             if len(nz_mito):
-                add("mito_fraction", "PASS", f"median mito fraction (non-empty barcodes)={np.median(nz_mito):.2%}")
+                add("mito_fraction", "INFO", f"median mito fraction (non-empty barcodes)={np.median(nz_mito):.2%}")
     except Exception as exc:
         add("mito_fraction", "WARN", f"Could not compute mitochondrial fraction: {exc}")
 

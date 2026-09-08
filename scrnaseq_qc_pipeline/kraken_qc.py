@@ -38,13 +38,6 @@ KRAKEN2_INSTALL_HINT = (
     "directory via --kraken2-db."
 )
 
-# Minimum fraction of *classified* reads that must fall under the expected
-# taxon to PASS outright rather than WARN.
-_MIN_EXPECTED_FRACTION_PCT = 80.0
-# Any other single species above this fraction of classified reads is
-# flagged as a possible contaminant.
-_CONTAMINANT_FRACTION_PCT = 2.0
-_MAX_UNCLASSIFIED_PCT = 20.0
 _TOP_N_SPECIES = 5
 
 
@@ -117,34 +110,25 @@ def qc_kraken2(
         add("kraken2", "FAIL", f"Kraken2 classification failed: {exc}")
         return findings
 
+    # No PASS/WARN/FAIL judgment here -- Kraken2 doesn't itself assert what
+    # counts as "too much" unclassified or contamination, and we don't have a
+    # validated threshold for this (RNA-seq reads classify against a
+    # genome-based database at rates that don't resemble DNA-seq). Report the
+    # numbers; let whoever reads the report judge them.
     rows = parse_kraken2_report(report_path)
     unclassified = next((r for r in rows if r["rank"] == "U"), None)
     unclassified_pct = unclassified["pct"] if unclassified else 0.0
-    add("kraken2_unclassified", "WARN" if unclassified_pct > _MAX_UNCLASSIFIED_PCT else "PASS",
+    add("kraken2_unclassified", "INFO",
         f"{unclassified_pct:.1f}% of reads unclassified against this database")
 
     species_rows = sorted((r for r in rows if r["rank"] == "S"), key=lambda r: -r["pct"])
     top_desc = ", ".join(f"{r['name']} ({r['pct']:.1f}%)" for r in species_rows[:_TOP_N_SPECIES])
-    add("kraken2_top_species", "PASS", f"Top classified species: {top_desc or 'none'}")
+    add("kraken2_top_species", "INFO", f"Top classified species: {top_desc or 'none'}")
 
     if expected_species:
         match = next((r for r in species_rows if r["name"].lower() == expected_species.lower()), None)
-        if match is None:
-            add("kraken2_species_match", "FAIL",
-                f"Expected species {expected_species!r} not found among classified reads. Top hits: {top_desc}")
-        elif match["pct"] < _MIN_EXPECTED_FRACTION_PCT:
-            add("kraken2_species_match", "WARN",
-                f"Only {match['pct']:.1f}% of reads classified as expected species {expected_species!r}. "
-                f"Top hits: {top_desc}")
-        else:
-            add("kraken2_species_match", "PASS",
-                f"{match['pct']:.1f}% of reads classified as expected species {expected_species!r}")
-
-    for r in species_rows:
-        if expected_species and r["name"].lower() == expected_species.lower():
-            continue
-        if r["pct"] >= _CONTAMINANT_FRACTION_PCT:
-            add("kraken2_contaminant", "WARN",
-                f"{r['pct']:.1f}% of reads classified as {r['name']!r} (potential contaminant)")
+        pct = match["pct"] if match else 0.0
+        add("kraken2_species_match", "INFO",
+            f"{pct:.1f}% of reads classified as expected species {expected_species!r}. Top hits: {top_desc}")
 
     return findings

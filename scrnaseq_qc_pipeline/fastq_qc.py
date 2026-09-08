@@ -55,7 +55,6 @@ FASTQC_INSTALL_HINT = (
     "'brew install fastqc' or 'conda install -c bioconda fastqc'."
 )
 
-_LENGTH_NUM_RE = re.compile(r"\d+")
 _DIGITS_RE = re.compile(r"^\d+$")
 
 
@@ -269,7 +268,7 @@ def qc_raw_run(
         if _DIGITS_RE.match(total_seqs_str):
             total_fastqc_seqs += int(total_seqs_str)
             per_file_seq_counts[fname] = int(total_seqs_str)
-        add("fastqc_basic_stats", "PASS",
+        add("fastqc_basic_stats", "INFO",
             f"{fname}: {basic.get('Total Sequences', '?')} seqs, "
             f"len={basic.get('Sequence length', '?')}, GC={basic.get('%GC', '?')}%")
         for module_name, mod_status in modules.items():
@@ -306,13 +305,10 @@ def qc_raw_run(
         read_count = str(links[0].get("read_count", ""))
         if _DIGITS_RE.match(base_count) and _DIGITS_RE.match(read_count) and int(read_count) > 0:
             mean_len = int(base_count) / int(read_count)
-            observed_nums = sorted(int(n) for raw in observed_lengths for n in _LENGTH_NUM_RE.findall(raw))
-            if observed_nums:
-                lo, hi = min(observed_nums), max(observed_nums)
-                status = "PASS" if (lo - 1) <= mean_len <= (hi + 1) else "WARN"
-                add("mean_length_vs_registry", status,
-                    f"ENA base_count/read_count implies mean length={mean_len:.1f}, "
-                    f"FastQC observed length(s)={observed_lengths}")
+            # No pass/fail judgment -- just report both numbers side by side.
+            add("mean_length_vs_registry", "INFO",
+                f"ENA base_count/read_count implies mean length={mean_len:.1f}, "
+                f"FastQC observed length(s)={observed_lengths}")
 
     return findings
 
@@ -361,7 +357,7 @@ def qc_direct_fastq(syn, entity_id: str, entity_name: str,
     parsed = parse_fastqc_data(data_txt)
     basic = parsed["basic_statistics"]
     modules = parsed["modules"]
-    add("fastqc_basic_stats", "PASS",
+    add("fastqc_basic_stats", "INFO",
         f"{basic.get('Total Sequences', '?')} seqs, "
         f"len={basic.get('Sequence length', '?')}, GC={basic.get('%GC', '?')}%")
     for module_name, mod_status in modules.items():
