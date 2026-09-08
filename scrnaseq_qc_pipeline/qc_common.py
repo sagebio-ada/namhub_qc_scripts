@@ -8,12 +8,18 @@ from typing import Dict, Iterable, List, Optional, Union
 
 Finding = Dict[str, str]
 
-REPORT_FIELDS = ["sample", "entity_id", "check", "status", "detail"]
+# This pipeline is still at the preliminary/exploratory stage: we're using it
+# to understand what these datasets actually contain, not to run an
+# established, validated gate. So the report leads with `metric` (the actual
+# reported number/fact) and pushes `status` later -- reading the numbers is
+# the point right now, not triaging by verdict. Re-sort/reorder this once the
+# pipeline moves past exploration and verdicts start carrying real weight.
+REPORT_FIELDS = ["sample", "check", "metric", "status", "entity_id"]
 # INFO is for findings that report a real number with no pass/fail judgment
 # attached (no verified criterion, or a criterion we didn't trust enough to
 # assert as a verdict) -- it's distinct from PASS, which means a check was
 # actually applied and it succeeded. Don't reuse PASS for "here's some data."
-_SEVERITY_RANK = {"FAIL": 0, "WARN": 1, "PASS": 2, "INFO": 3}
+_VALID_STATUSES = {"FAIL", "WARN", "PASS", "INFO"}
 
 
 def first_value(raw: Optional[Union[list, tuple, str]]) -> str:
@@ -24,12 +30,14 @@ def first_value(raw: Optional[Union[list, tuple, str]]) -> str:
 
 
 def make_finding(entity_id: str, sample: str, check: str, status: str, detail: str) -> Finding:
-    assert status in _SEVERITY_RANK, f"unknown status {status!r}"
-    return {"entity_id": entity_id, "sample": sample, "check": check, "status": status, "detail": detail}
+    assert status in _VALID_STATUSES, f"unknown status {status!r}"
+    return {"entity_id": entity_id, "sample": sample, "check": check, "status": status, "metric": detail}
 
 
 def write_report_csv(findings: Iterable[Finding], path: Path) -> None:
-    rows = sorted(findings, key=lambda f: (_SEVERITY_RANK.get(f["status"], 1), f["sample"], f["check"]))
+    # Sorted for readable grouping (by sample, then check) -- NOT by
+    # severity. See the note on REPORT_FIELDS above.
+    rows = sorted(findings, key=lambda f: (f["sample"], f["check"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=REPORT_FIELDS)

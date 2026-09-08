@@ -132,9 +132,12 @@ def run_fastqc(fastq_path: Path, outdir: Path) -> Path:
 
 
 def parse_fastqc_data(path: Path) -> Dict[str, object]:
-    """Parse fastqc_data.txt into basic stats (dict) + per-module PASS/WARN/FAIL."""
+    """Parse fastqc_data.txt into basic stats, per-module PASS/WARN/FAIL, and
+    each module's raw lines (used by summarize_module_detail to explain *why*
+    a module got its verdict, not just what the verdict was)."""
     basic_stats: Dict[str, str] = {}
     modules: Dict[str, str] = {}
+    module_lines: Dict[str, List[str]] = {}
     current_module: Optional[str] = None
     with open(path) as fh:
         for line in fh:
@@ -146,11 +149,80 @@ def parse_fastqc_data(path: Path) -> Dict[str, object]:
                 name, status = line[2:].rsplit("\t", 1)
                 current_module = name
                 modules[name] = status
+                module_lines[name] = []
                 continue
             if current_module == "Basic Statistics" and "\t" in line and not line.startswith("#"):
                 key, val = line.split("\t", 1)
                 basic_stats[key] = val
-    return {"basic_statistics": basic_stats, "modules": modules}
+            if current_module is not None:
+                module_lines[current_module].append(line)
+    return {"basic_statistics": basic_stats, "modules": modules, "module_lines": module_lines}
+
+
+def summarize_module_detail(name: str, lines: List[str]) -> str:
+    """Explain *why* a FastQC module got its verdict, using FastQC's own
+    published criteria, instead of just relaying the pass/warn/fail word.
+
+    Per base sequence content: WARN/FAIL is triggered by the single position
+    with the largest G-vs-C or A-vs-T imbalance (FastQC's own threshold: WARN
+    >10 points, FAIL >20) -- report that position.
+    Adapter Content: WARN/FAIL is triggered by the single (position, adapter)
+    with the highest read-through fraction (FastQC's own threshold: WARN >5%,
+    FAIL >10%) -- report that.
+    Sequence Duplication Levels: FastQC reports a single scalar, the percent
+    of reads that would remain after deduplication -- invert it to get percent
+    duplicated, which is what the WARN/FAIL threshold (>20%/>50%) is checked
+    against.
+    """
+    rows = [ln.split("\t") for ln in lines if ln and not ln.startswith("#")]
+
+    if name == "Per base sequence content" and rows:
+        try:
+            best = max(rows, key=lambda r: max(abs(float(r[1]) - float(r[4])), abs(float(r[2]) - float(r[3]))))
+            pos, g, a, t, c = best[0], float(best[1]), float(best[2]), float(best[3]), float(best[4])
+            skew = max(abs(g - c), abs(a - t))
+            return (f"largest base-content skew at position {pos} "
+                    f"(G={g:.1f}% A={a:.1f}% T={t:.1f}% C={c:.1f}%, max |G-C|/|A-T|={skew:.1f}pt)")
+        except (ValueError, IndexError):
+            return ""
+
+    if name == "Adapter Content" and rows:
+        header = next((ln for ln in lines if ln.startswith("#Position")), "")
+        adapter_names = header.lstrip("#").split("\t")[1:]
+        best_pos, best_adapter, best_pct = None, None, -1.0
+        try:
+            for r in rows:
+                for i, val in enumerate(r[1:]):
+                    pct = float(val)
+                    if pct > best_pct:
+                        best_pct, best_pos = pct, r[0]
+                        best_adapter = adapter_names[i] if i < len(adapter_names) else f"adapter#{i}"
+        except ValueError:
+            return ""
+        if best_pos is not None:
+            return f"highest adapter read-through: {best_adapter} reaches {best_pct:.2f}% of reads by position {best_pos}"
+        return ""
+
+    if name == "Sequence Duplication Levels":
+        dedup_line = next((ln for ln in lines if ln.startswith("#Total Deduplicated Percentage")), "")
+        if dedup_line and "\t" in dedup_line:
+            try:
+                pct_unique = float(dedup_line.split("\t", 1)[1])
+            except ValueError:
+                return ""
+            return f"{100 - pct_unique:.1f}% of reads are duplicates ({pct_unique:.1f}% would remain after deduplication)"
+
+    return ""
+
+
+def _add_module_findings(add, fname: str, modules: Dict[str, str], module_lines: Dict[str, List[str]]) -> None:
+    for module_name, mod_status in modules.items():
+        sev = {"pass": "PASS", "warn": "WARN", "fail": "FAIL"}.get(mod_status.lower(), "WARN")
+        if sev == "PASS":
+            continue
+        extra = summarize_module_detail(module_name, module_lines.get(module_name, []))
+        detail = f"{fname}: {mod_status}" + (f" — {extra}" if extra else "")
+        add(f"fastqc_module:{module_name}", sev, detail)
 
 
 def qc_raw_run(
@@ -263,6 +335,7 @@ def qc_raw_run(
         parsed = parse_fastqc_data(data_txt)
         basic = parsed["basic_statistics"]
         modules = parsed["modules"]
+        module_lines = parsed["module_lines"]
         observed_lengths.append(basic.get("Sequence length", ""))
         total_seqs_str = basic.get("Total Sequences", "").replace(",", "")
         if _DIGITS_RE.match(total_seqs_str):
@@ -271,10 +344,7 @@ def qc_raw_run(
         add("fastqc_basic_stats", "INFO",
             f"{fname}: {basic.get('Total Sequences', '?')} seqs, "
             f"len={basic.get('Sequence length', '?')}, GC={basic.get('%GC', '?')}%")
-        for module_name, mod_status in modules.items():
-            sev = {"pass": "PASS", "warn": "WARN", "fail": "FAIL"}.get(mod_status.lower(), "WARN")
-            if sev != "PASS":
-                add(f"fastqc_module:{module_name}", sev, f"{fname}: {mod_status}")
+        _add_module_findings(add, fname, modules, module_lines)
 
         if not keep_files:
             dest.unlink(missing_ok=True)
@@ -357,13 +427,11 @@ def qc_direct_fastq(syn, entity_id: str, entity_name: str,
     parsed = parse_fastqc_data(data_txt)
     basic = parsed["basic_statistics"]
     modules = parsed["modules"]
+    module_lines = parsed["module_lines"]
     add("fastqc_basic_stats", "INFO",
         f"{basic.get('Total Sequences', '?')} seqs, "
         f"len={basic.get('Sequence length', '?')}, GC={basic.get('%GC', '?')}%")
-    for module_name, mod_status in modules.items():
-        sev = {"pass": "PASS", "warn": "WARN", "fail": "FAIL"}.get(mod_status.lower(), "WARN")
-        if sev != "PASS":
-            add(f"fastqc_module:{module_name}", sev, mod_status)
+    _add_module_findings(add, entity_name, modules, module_lines)
 
     if not keep_files:
         Path(ent.path).unlink(missing_ok=True)

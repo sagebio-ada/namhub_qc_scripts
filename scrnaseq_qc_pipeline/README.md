@@ -82,8 +82,16 @@ Python runtime dependency, so this is safe).
 
 ## Metrics generated
 
-Every row in `scrnaseq_qc_report.csv` has `entity_id`, `sample`, `check`,
-`status` (PASS/WARN/FAIL/INFO), and `detail`. 26 distinct check types.
+Every row in `scrnaseq_qc_report.csv` has `sample`, `check`, `metric` (the
+actual reported number/fact), `status` (PASS/WARN/FAIL/INFO), and `entity_id`.
+26 distinct check types.
+
+Columns are ordered, and rows are sorted (`sample`, then `check`), to put the
+metric front and center rather than the verdict — this pipeline is still at
+the preliminary/exploratory stage, being used to understand what these
+datasets actually contain rather than to run an established, validated gate.
+Re-prioritize `status` once the pipeline moves past exploration and verdicts
+start carrying real weight.
 
 - **"Full file needed?" = Yes** means the check is skipped (or, for the ENA
   integrity checks, silently not computed) unless the raw fastq was
@@ -126,7 +134,7 @@ data to interpret yourself, not as a verdict.
 | Raw FASTQ vs. ENA | `paired_fastq_parity` | Split R1/R2 mate files have matching read counts (skipped for a single interleaved file) | FastQC per-file counts | Objective correctness (exact match) | **Yes** |
 | FASTQ structure | `fq_lint` | Structural integrity — record completeness, valid alphabet, `+` line, matching seq/quality lengths, well-formed quality string | [`fq`](https://github.com/stjude-rust-labs/fq) (stjude-rust-labs) | **Tool's own verdict** (exit code) | No |
 | FastQC content | `fastqc_basic_stats` | Total sequences, sequence length, %GC summary | [FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/) | **Informational only** — no threshold, always INFO | No |
-| FastQC content | `fastqc_module:<name>` | Any FastQC module that isn't a clean PASS — per-base quality, per-sequence quality, per-base/sequence GC content, per-base N content, sequence length distribution, duplication levels, overrepresented sequences, adapter content, k-mer content | FastQC | **Tool's own verdict** (FastQC's internal per-module thresholds, unmodified) | No |
+| FastQC content | `fastqc_module:<name>` | Any FastQC module that isn't a clean PASS — per-base quality, per-sequence quality, per-base/sequence GC content, per-base N content, sequence length distribution, duplication levels, overrepresented sequences, adapter content, k-mer content. For `Per base sequence content`, `Adapter Content`, and `Sequence Duplication Levels` specifically, the metric also names the exact position/adapter/percentage responsible (parsed from `fastqc_data.txt`'s own per-module tables, using FastQC's own published WARN/FAIL criteria) rather than just relaying the pass/warn/fail word | FastQC | **Tool's own verdict** (FastQC's internal per-module thresholds, unmodified) | No |
 | Species/contamination | `kraken2_unclassified` | % of reads not classified against the reference database | [Kraken2](https://github.com/DerrickWood/kraken2) | **Informational only** — no threshold, always INFO | No |
 | Species/contamination | `kraken2_top_species` | Top 5 classified species and their read fractions | Kraken2 | **Informational only** — always INFO | No |
 | Species/contamination | `kraken2_species_match` | % of reads matching the GEO-declared organism | Kraken2 + `geo_synapse.geo` for expected species | **Informational only** — no threshold, always INFO | No |
