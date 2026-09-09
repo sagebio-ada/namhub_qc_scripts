@@ -158,7 +158,11 @@ adapting this for your own data:
 Every row in `scrnaseq_qc_report.csv` has `sample`, `check`, `metric` (the
 actual reported number/fact), `status` (`PASS`/`WARN`/`FAIL`/`INFO`), and
 `entity_id` (the specific Synapse file or sample this row is about). 26
-distinct check types, grouped below by **what kind of check it is**:
+distinct check types in the code (the table below lists 29 rows — `fastqc_module:<name>`
+is one dynamic check type that names a different FastQC module each time it
+fires, split across 4 rows here for the sake of documenting its most common
+and most interpretation-worthy names individually), grouped below by
+**what kind of check it is**:
 
 - **Metadata cross-check** — compares a declared/registered value against
   another source: a Synapse annotation vs. GEO's record, or a file's own
