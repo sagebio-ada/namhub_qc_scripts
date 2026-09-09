@@ -61,6 +61,8 @@ def qc_processed_sample(
         try:
             ent = syn.get(entity_id, downloadLocation=str(sample_dir), ifcollision="overwrite.local")
             paths[role] = Path(ent.path)
+            size = paths[role].stat().st_size
+            add(f"download:{role}", "PASS", f"{entity_id} ({ent.name}): downloaded {size / 1e6:.1f} MB")
         except Exception as exc:
             add(f"download:{role}", "FAIL", f"{entity_id}: {exc}")
     if len(paths) < 3:

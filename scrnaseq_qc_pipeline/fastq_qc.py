@@ -257,7 +257,9 @@ def qc_raw_run(
     if not links:
         add("fastq_resolution", "FAIL", f"No ENA fastq links found for {srr_accession} (run may not be public yet)")
         return findings
-    add("fastq_resolution", "PASS", f"{len(links)} fastq file(s) resolved from ENA for {srr_accession}")
+    urls = "; ".join(item["link"] for item in links)
+    add("fastq_resolution", "PASS",
+        f"{len(links)} fastq file(s) resolved from ENA for {srr_accession}: {urls}")
 
     run_dir = work_dir / entity_name
     run_dir.mkdir(parents=True, exist_ok=True)
