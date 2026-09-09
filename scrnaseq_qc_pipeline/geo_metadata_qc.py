@@ -66,33 +66,32 @@ def check_geo_annotations(
     def add(check: str, status: str, detail: str) -> None:
         findings.append(make_finding(entity_id, entity_name, check, status, detail))
 
+    # No pass/fail verdict on any of these -- whether a string/substring match
+    # counts as "correct" is a judgment call, and these are our own comparison,
+    # not a tool's. Report both sides; let a human decide if they agree.
     declared_platform = first_value(annotations.get("platform"))
     geo_instrument = str(geo_row.get("sample_instrument_model") or "")
     if declared_platform and geo_instrument:
         mapped = map_platform(geo_instrument) or geo_instrument
-        status = "PASS" if _norm_compact(declared_platform) == _norm_compact(mapped) else "WARN"
-        add("platform_vs_geo", status,
-            f"Synapse platform={declared_platform!r} vs GEO sample_instrument_model={geo_instrument!r}")
+        add("platform_vs_geo", "INFO",
+            f"Synapse platform={declared_platform!r} vs GEO sample_instrument_model={geo_instrument!r} "
+            f"(normalized: {_norm_compact(declared_platform)!r} vs {_norm_compact(mapped)!r})")
 
     declared_ref = first_value(annotations.get("referenceSet"))
     geo_assembly = str(geo_row.get("assembly") or "")
     if declared_ref and geo_assembly:
-        status = "PASS" if _norm(declared_ref) in _norm(geo_assembly) else "WARN"
-        add("reference_vs_geo", status,
+        add("reference_vs_geo", "INFO",
             f"Synapse referenceSet={declared_ref!r} vs GEO assembly={geo_assembly!r}")
 
     kit_text = _get_kit_text(geo_row)
     declared_version = first_value(annotations.get("libraryVersion"))
     if declared_version and kit_text:
-        status = "PASS" if _norm(declared_version) in _norm(kit_text) else "WARN"
-        add("library_version_vs_geo", status,
+        add("library_version_vs_geo", "INFO",
             f"Synapse libraryVersion={declared_version!r} vs GEO kit description={kit_text!r}")
 
     declared_method = first_value(annotations.get("libraryPreparationMethod"))
     if declared_method and kit_text:
-        alias = {"10x": "10x genomics"}.get(_norm(declared_method), _norm(declared_method))
-        status = "PASS" if alias in _norm(kit_text) or _norm(declared_method) in _norm(kit_text) else "WARN"
-        add("library_prep_method_vs_geo", status,
+        add("library_prep_method_vs_geo", "INFO",
             f"Synapse libraryPreparationMethod={declared_method!r} vs GEO kit description={kit_text!r}")
 
     return findings

@@ -135,13 +135,17 @@ real dataset, not a finished, broadly-validated tool. Two things follow from
 that, both reflected in the report format and worth keeping in mind if you're
 adapting this for your own data:
 
-- **A `PASS`/`WARN`/`FAIL` verdict is only as good as the check behind it.**
-  Some checks here are exact, objective comparisons (does a checksum match,
-  does a count match) — those verdicts are trustworthy. Others would have
-  required inventing a threshold with no validated basis (e.g. "how much
-  Kraken2-unclassified is too much for single-cell RNA-seq data specifically")
-  — rather than assert a made-up threshold as if it were established, those
-  checks report the plain number as `INFO` and leave the judgment to a human.
+- **This pipeline's own code never asserts a `PASS`/`FAIL` verdict about the
+  data.** Only two checks carry a real pass/warn/fail judgment at all —
+  `fq lint`'s exit code and FastQC's own built-in per-module thresholds —
+  because those are a named tool's own established judgment, not this
+  pipeline's opinion. Every comparison this pipeline's own code performs
+  (does a checksum match, does a count match, does a Synapse annotation
+  match GEO's record) reports `INFO`: both sides of the comparison, with no
+  verdict attached, even where the comparison is an exact one. `FAIL`
+  appears elsewhere only for a genuine operational failure — a network
+  error, a file that won't parse, a required file that's missing — where
+  there's no data to report at all, not a judgment about data quality.
   See "Metrics generated" below for exactly which checks fall into which
   category.
 - **The report leads with the number, not the verdict.** Columns are ordered
@@ -190,39 +194,40 @@ worth adding (that's how Kraken2 and `fq` ended up in this pipeline).
 **"Compared against"** names the external source a result is checked against,
 where the check involves one at all.
 
-**"Verdict basis"** — for a `PASS`/`FAIL`/`WARN` check, this says whether the
-verdict is a named tool's own judgment (`fq lint`'s exit code, FastQC's
-built-in per-module thresholds), or an exact objective comparison this
-pipeline's own code performs (does A equal B — a checksum, a count, a
-dimension). For an `INFO` check, it says there's no validated threshold
-behind it at all — the raw number is reported and left for a human to
-interpret, rather than dressed up as a verdict it doesn't deserve.
+**"Verdict basis"** — only two rows in this table can ever produce a real
+`PASS`/`WARN`/`FAIL` judgment: `fq lint`'s exit code and FastQC's own
+built-in per-module thresholds, both a named tool's own established
+judgment, not this pipeline's opinion. Every other row is `INFO` on success —
+reporting both sides of a comparison with no verdict attached, even for an
+exact comparison like a checksum — and `FAIL` only for a genuine operational
+failure (an exception: a network error, a file that won't parse, a required
+file that's missing), never as a graded judgment about the data itself.
 
 | Category | Check | What it reports | Tool | Compared against | Verdict basis | Full file needed? |
 |---|---|---|---|---|---|---|
-| Metadata cross-check | `platform_vs_geo` | Synapse's `platform` annotation vs. GEO's own recorded sequencing instrument, after normalizing formatting differences between the two | `geo-synapse` | GEO's record | Objective correctness (string match) | No file at all |
-| Metadata cross-check | `reference_vs_geo` | Synapse's `referenceSet` (reference genome) annotation vs. GEO's recorded genome assembly | `geo-synapse` | GEO's record | Objective correctness (substring match) | No file at all |
-| Metadata cross-check | `library_version_vs_geo` | Synapse's `libraryVersion` (e.g. 10x Chromium chemistry version) annotation vs. GEO's own free-text description of the sequencing kit used | `geo-synapse` | GEO's record | Objective correctness (substring match) | No file at all |
-| Metadata cross-check | `library_prep_method_vs_geo` | Synapse's `libraryPreparationMethod` annotation vs. GEO's own free-text kit description | `geo-synapse` | GEO's record | Objective correctness (substring match) | No file at all |
-| Metadata cross-check | `geo_lookup` | Flags a raw run whose sample accession isn't found in the given GEO series at all | `geo-synapse` | GEO's record | Objective correctness (lookup) | No file at all |
-| Metadata cross-check | `fastq_size_vs_ena` | Downloaded file's byte size vs. the size ENA has registered for it | Custom code | ENA's record | Objective correctness (exact match) | **Yes** |
-| Metadata cross-check | `fastq_md5_vs_ena` | Downloaded file's checksum vs. the checksum ENA has registered for it | Custom code (MD5) | ENA's record | Objective correctness (exact match) | **Yes** |
-| Metadata cross-check | `read_count_vs_ena` | FastQC's total-read count vs. the read count ENA has registered for this run | FastQC | ENA's record | Objective correctness (exact match) | **Yes** |
-| Metadata cross-check | `mean_length_vs_registry` | The read length ENA's own read/base counts imply, alongside FastQC's directly observed read length(s) | FastQC | ENA's record | **Informational only** — no threshold, always `INFO` | **Yes** |
-| Metadata cross-check | `paired_fastq_parity` | For paired-end runs stored as two separate mate files (not interleaved into one), whether both mates have the same number of reads | FastQC | — (compares FastQC's own per-file counts to each other) | Objective correctness (exact match) | **Yes** |
-| Metadata cross-check | `matrix_dimensions` | Whether the matrix file's own header dimensions match the barcode/feature counts counted from the other two files | Custom code (`scipy`/`numpy`) | — (compares two internally-derived counts) | Objective correctness (exact match) | **Yes** |
-| Metadata cross-check | `kraken2_species_match` | % of reads Kraken2 actually classified as the organism GEO says this sample is | Kraken2 | GEO's record | **Informational only** — no threshold, always `INFO` | No |
+| Metadata cross-check | `platform_vs_geo` | Synapse's `platform` annotation vs. GEO's own recorded sequencing instrument, after normalizing formatting differences between the two | `geo-synapse` | GEO's record | No verdict — always `INFO` | No file at all |
+| Metadata cross-check | `reference_vs_geo` | Synapse's `referenceSet` (reference genome) annotation vs. GEO's recorded genome assembly | `geo-synapse` | GEO's record | No verdict — always `INFO` | No file at all |
+| Metadata cross-check | `library_version_vs_geo` | Synapse's `libraryVersion` (e.g. 10x Chromium chemistry version) annotation vs. GEO's own free-text description of the sequencing kit used | `geo-synapse` | GEO's record | No verdict — always `INFO` | No file at all |
+| Metadata cross-check | `library_prep_method_vs_geo` | Synapse's `libraryPreparationMethod` annotation vs. GEO's own free-text kit description | `geo-synapse` | GEO's record | No verdict — always `INFO` | No file at all |
+| Metadata cross-check | `geo_lookup` | Whether the sample accession was found in the given GEO series at all | `geo-synapse` | GEO's record | No verdict on success (`INFO`); `FAIL` only if the sample isn't in GEO at all — a genuine blocker, no row to compare | No file at all |
+| Metadata cross-check | `fastq_size_vs_ena` | Downloaded file's byte size vs. the size ENA has registered for it | Custom code | ENA's record | No verdict — always `INFO` | **Yes** |
+| Metadata cross-check | `fastq_md5_vs_ena` | Downloaded file's checksum vs. the checksum ENA has registered for it | Custom code (MD5) | ENA's record | No verdict — always `INFO` | **Yes** |
+| Metadata cross-check | `read_count_vs_ena` | FastQC's total-read count vs. the read count ENA has registered for this run | FastQC | ENA's record | No verdict — always `INFO` | **Yes** |
+| Metadata cross-check | `mean_length_vs_registry` | The read length ENA's own read/base counts imply, alongside FastQC's directly observed read length(s) | FastQC | ENA's record | No verdict — always `INFO` | **Yes** |
+| Metadata cross-check | `paired_fastq_parity` | For paired-end runs stored as two separate mate files (not interleaved into one), the read count of each mate | FastQC | — (compares FastQC's own per-file counts to each other) | No verdict — always `INFO` | **Yes** |
+| Metadata cross-check | `matrix_dimensions` | The matrix file's own header dimensions, alongside the barcode/feature counts counted from the other two files | Custom code (`scipy`/`numpy`) | — (compares two internally-derived counts) | No verdict — always `INFO` | **Yes** |
+| Metadata cross-check | `kraken2_species_match` | % of reads Kraken2 actually classified as the organism GEO says this sample is | Kraken2 | GEO's record | No verdict — always `INFO` | No |
 | File-content check | `fq_lint` | Structural integrity of the FASTQ file itself — complete records, valid sequence alphabet, correctly formatted separator line, matching sequence/quality-score lengths, well-formed quality scores | [`fq`](https://github.com/stjude-rust-labs/fq) | — | **Tool's own verdict** (exit code) | No |
-| File-content check | `fastqc_basic_stats` | Total read count, read length, overall %GC | [FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/) | — | **Informational only** — no threshold, always `INFO` | No |
+| File-content check | `fastqc_basic_stats` | Total read count, read length, overall %GC | [FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/) | — | No verdict — always `INFO` | No |
 | File-content check | `fastqc_module:<name>` | Any FastQC quality module that isn't a clean pass — per-base/per-sequence quality scores, per-base/per-sequence GC content, per-base ambiguous-base (N) content, read length distribution, duplicate-read rate, overrepresented sequences, adapter contamination, repetitive k-mer content. For the three modules most relevant to this kind of data — base-composition bias, adapter contamination, and duplication rate — the metric also names the exact position/adapter/percentage responsible, parsed from FastQC's own detailed output using FastQC's own published pass/warn/fail criteria, rather than just relaying the pass/warn/fail word | FastQC | — | **Tool's own verdict** (FastQC's built-in per-module thresholds, unmodified) | No |
-| File-content check | `kraken2_unclassified` | % of reads Kraken2 couldn't confidently classify against the reference database at all | [Kraken2](https://github.com/DerrickWood/kraken2) | — | **Informational only** — no threshold, always `INFO` | No |
-| File-content check | `kraken2_top_species` | The top 5 organisms Kraken2 actually found in the reads, and what fraction of reads matched each | Kraken2 | — | **Informational only** — always `INFO` | No |
-| File-content check | `file_integrity` | Whether the barcode and feature list files are intact and readable, with their line counts | Custom code | — | Objective correctness (readable or not) | **Yes** |
-| File-content check | `matrix_integrity` | Whether the count-matrix file is intact and parses as a valid matrix | Custom code (`scipy`) | — | Objective correctness (parses or not) | **Yes** |
-| File-content check | `matrix_metrics` | Median UMI (unique transcript molecule) count per cell barcode, median genes detected per cell barcode, how many barcodes have zero counts, total nonzero matrix entries | Custom code (`numpy`) | — | Informational; only flagged as a real problem if the matrix is completely degenerate (zero non-empty barcodes at all) | **Yes** |
-| File-content check | `empty_barcode_check` | What fraction of barcodes have zero counts, reported alongside whether Synapse declares this the raw (unfiltered) or filtered CellRanger output | Custom code (`numpy`) | — | **Informational only** — no threshold, always `INFO` | **Yes** |
-| File-content check | `mito_fraction` | Median fraction of each cell's counts coming from mitochondrial genes (a common per-cell quality signal — a very high fraction often indicates a dying/stressed cell), among barcodes with any counts at all | Custom code (`numpy`) | — | **Informational only** — always `INFO` | **Yes** |
-| Existence/resolution check | `fastq_resolution` | Whether the archived sequencing run's accession successfully resolved to a real, directly downloadable file, with the actual resolved URL(s) | `geo-synapse` | — | Objective correctness (did it resolve) | No file at all (API lookup only) |
-| Existence/resolution check | `fastq_download` | Whether the download itself succeeded, with the filename and size | Custom code | — | Objective correctness (did it succeed) | No — reports whatever was requested, capped or full |
-| Existence/resolution check | `processed_completeness` | Whether all three required files (barcodes, features, matrix) are present for this sample, with the specific Synapse file ID behind each one | `synapseclient` | — | Objective correctness (all 3 present) | No file at all |
-| Existence/resolution check | `download:<role>` | Whether each of the three processed-data files downloaded successfully, with its Synapse file ID, filename, and size | `synapseclient` | — | Objective correctness (did it succeed) | **Yes** — no capped-download option exists for these files; a full download always happens |
+| File-content check | `kraken2_unclassified` | % of reads Kraken2 couldn't confidently classify against the reference database at all | [Kraken2](https://github.com/DerrickWood/kraken2) | — | No verdict — always `INFO` | No |
+| File-content check | `kraken2_top_species` | The top 5 organisms Kraken2 actually found in the reads, and what fraction of reads matched each | Kraken2 | — | No verdict — always `INFO` | No |
+| File-content check | `file_integrity` | Whether the barcode and feature list files are readable, with their line counts | Custom code | — | No verdict on success (`INFO`); `FAIL` only if the files can't be read at all | **Yes** |
+| File-content check | `matrix_integrity` | Whether the count-matrix file parses as a valid matrix, with its parsed shape | Custom code (`scipy`) | — | No verdict on success (`INFO`); `FAIL` only if it doesn't parse at all | **Yes** |
+| File-content check | `matrix_metrics` | Median UMI (unique transcript molecule) count per cell barcode, median genes detected per cell barcode, how many barcodes have zero counts, total nonzero matrix entries | Custom code (`numpy`) | — | No verdict — `INFO`, except `FAIL` for the completely-degenerate case (zero usable barcodes at all, nothing to report) | **Yes** |
+| File-content check | `empty_barcode_check` | What fraction of barcodes have zero counts, reported alongside whether Synapse declares this the raw (unfiltered) or filtered CellRanger output | Custom code (`numpy`) | — | No verdict — always `INFO` | **Yes** |
+| File-content check | `mito_fraction` | Median fraction of each cell's counts coming from mitochondrial genes (a common per-cell quality signal — a very high fraction often indicates a dying/stressed cell), among barcodes with any counts at all | Custom code (`numpy`) | — | No verdict on success (`INFO`); `FAIL` only if it can't be computed at all | **Yes** |
+| Existence/resolution check | `fastq_resolution` | Whether the archived sequencing run's accession successfully resolved to a real, directly downloadable file, with the actual resolved URL(s) | `geo-synapse` | — | No verdict on success (`INFO`); `FAIL` only if resolution fails outright | No file at all (API lookup only) |
+| Existence/resolution check | `fastq_download` | Whether the download itself succeeded, with the filename and size | Custom code | — | No verdict on success (`INFO`); `FAIL` only if the download itself errors | No — reports whatever was requested, capped or full |
+| Existence/resolution check | `processed_completeness` | Whether all three required files (barcodes, features, matrix) are present for this sample, with the specific Synapse file ID behind each one | `synapseclient` | — | No verdict on success (`INFO`); `FAIL` only if a required file is missing outright | No file at all |
+| Existence/resolution check | `download:<role>` | Whether each of the three processed-data files downloaded successfully, with its Synapse file ID, filename, and size | `synapseclient` | — | No verdict on success (`INFO`); `FAIL` only if the download itself errors | **Yes** — no capped-download option exists for these files; a full download always happens |

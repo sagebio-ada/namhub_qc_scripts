@@ -184,10 +184,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         for entity_id, info in raw_runs.items():
             geo_row = geo_by_gsm.get(info["name"])
             if geo_row:
+                findings.append(make_finding(entity_id, info["name"], "geo_lookup", "INFO",
+                                              f"{info['name']} found in GEO series {args.geo_accession}"))
                 findings.extend(geo_metadata_qc.check_geo_annotations(
                     entity_id, info["name"], info["annotations"], geo_row))
             else:
-                findings.append(make_finding(entity_id, info["name"], "geo_lookup", "WARN",
+                # A genuine blocker, not a judgment call -- there's no GEO row
+                # at all to compare against for this sample.
+                findings.append(make_finding(entity_id, info["name"], "geo_lookup", "FAIL",
                                               f"{info['name']} not found in GEO series {args.geo_accession}"))
     else:
         print("No --geo-accession given; skipping Synapse-annotations-vs-GEO check.")

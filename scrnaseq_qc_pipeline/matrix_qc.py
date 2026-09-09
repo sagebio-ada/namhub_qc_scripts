@@ -49,10 +49,12 @@ def qc_processed_sample(
 
     missing = REQUIRED_ROLES - files.keys()
     if missing:
+        # A genuine blocker, not a judgment call -- nothing downstream can
+        # run without these files.
         add("processed_completeness", "FAIL", f"Missing role(s) {sorted(missing)} for sample {sample_id}")
         return findings
     present = ", ".join(f"{role}={entity_id}" for role, entity_id in sorted(files.items()))
-    add("processed_completeness", "PASS", f"barcodes/features/matrix all present: {present}")
+    add("processed_completeness", "INFO", f"barcodes/features/matrix all present: {present}")
 
     sample_dir = work_dir / sample_id
     sample_dir.mkdir(parents=True, exist_ok=True)
@@ -62,7 +64,7 @@ def qc_processed_sample(
             ent = syn.get(entity_id, downloadLocation=str(sample_dir), ifcollision="overwrite.local")
             paths[role] = Path(ent.path)
             size = paths[role].stat().st_size
-            add(f"download:{role}", "PASS", f"{entity_id} ({ent.name}): downloaded {size / 1e6:.1f} MB")
+            add(f"download:{role}", "INFO", f"{entity_id} ({ent.name}): downloaded {size / 1e6:.1f} MB")
         except Exception as exc:
             add(f"download:{role}", "FAIL", f"{entity_id}: {exc}")
     if len(paths) < 3:
@@ -74,7 +76,7 @@ def qc_processed_sample(
     except Exception as exc:
         add("file_integrity", "FAIL", f"Could not read barcodes/features files: {exc}")
         return findings
-    add("file_integrity", "PASS", f"{n_barcodes} barcodes, {n_features} features readable")
+    add("file_integrity", "INFO", f"{n_barcodes} barcodes, {n_features} features readable")
 
     try:
         import scipy.io
@@ -83,22 +85,19 @@ def qc_processed_sample(
     except Exception as exc:
         add("matrix_integrity", "FAIL", f"Could not parse matrix.mtx.gz: {exc}")
         return findings
+    add("matrix_integrity", "INFO", f"matrix.mtx.gz parsed: shape {mat.shape}, nnz={mat.nnz}")
 
     n_genes_mtx, n_cells_mtx = mat.shape
-    if n_genes_mtx != n_features or n_cells_mtx != n_barcodes:
-        add("matrix_dimensions", "FAIL",
-            f"matrix header {mat.shape} != (features={n_features}, barcodes={n_barcodes})")
-    else:
-        add("matrix_dimensions", "PASS", f"matrix shape {mat.shape} matches barcodes/features counts")
+    add("matrix_dimensions", "INFO",
+        f"matrix header shape={mat.shape} vs counted (features={n_features}, barcodes={n_barcodes})")
 
     counts_per_cell = np.asarray(mat.sum(axis=0)).ravel()
     genes_per_cell = np.asarray((mat > 0).sum(axis=0)).ravel()
     nonzero_counts = counts_per_cell[counts_per_cell > 0]
     nonzero_genes = genes_per_cell[genes_per_cell > 0]
-    # INFO for the normal case (just reporting numbers); WARN is a real flag --
-    # zero non-empty barcodes in the whole matrix is a genuine integrity problem,
-    # not a threshold call.
-    add("matrix_metrics", "INFO" if len(nonzero_counts) else "WARN",
+    # FAIL only for the completely-degenerate case (zero usable barcodes at
+    # all -- there's nothing to report, not a graded judgment call).
+    add("matrix_metrics", "INFO" if len(nonzero_counts) else "FAIL",
         f"median UMI/cell={np.median(nonzero_counts) if len(nonzero_counts) else 0:.0f}, "
         f"median genes/cell={np.median(nonzero_genes) if len(nonzero_genes) else 0:.0f}, "
         f"barcodes_with_zero_counts={(counts_per_cell == 0).sum()}/{len(counts_per_cell)}, nnz={mat.nnz}")
@@ -119,6 +118,6 @@ def qc_processed_sample(
             if len(nz_mito):
                 add("mito_fraction", "INFO", f"median mito fraction (non-empty barcodes)={np.median(nz_mito):.2%}")
     except Exception as exc:
-        add("mito_fraction", "WARN", f"Could not compute mitochondrial fraction: {exc}")
+        add("mito_fraction", "FAIL", f"Could not compute mitochondrial fraction: {exc}")
 
     return findings

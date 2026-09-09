@@ -258,7 +258,7 @@ def qc_raw_run(
         add("fastq_resolution", "FAIL", f"No ENA fastq links found for {srr_accession} (run may not be public yet)")
         return findings
     urls = "; ".join(item["link"] for item in links)
-    add("fastq_resolution", "PASS",
+    add("fastq_resolution", "INFO",
         f"{len(links)} fastq file(s) resolved from ENA for {srr_accession}: {urls}")
 
     run_dir = work_dir / entity_name
@@ -281,16 +281,18 @@ def qc_raw_run(
         )
         if already_cached:
             size = dest.stat().st_size
-            add("fastq_download", "PASS", f"{fname}: already downloaded ({size / 1e6:.1f} MB), reusing")
+            add("fastq_download", "INFO", f"{fname}: already downloaded ({size / 1e6:.1f} MB), reusing")
         else:
             try:
                 size = download_fastq(session, url, dest, max_bytes=max_bytes)
             except Exception as exc:
+                # A genuine operational failure, not a judgment call -- there's
+                # no file to report anything about.
                 add("fastq_download", "FAIL", f"{fname}: {exc}")
                 continue
             was_capped_now = bool(max_bytes and size >= max_bytes)
             truncated = " (capped for spot-QC, trimmed to whole records)" if was_capped_now else ""
-            add("fastq_download", "PASS", f"{fname}: downloaded {size / 1e6:.1f} MB{truncated}")
+            add("fastq_download", "INFO", f"{fname}: downloaded {size / 1e6:.1f} MB{truncated}")
         was_capped = bool(max_bytes and size >= max_bytes)
         any_capped = any_capped or was_capped
 
@@ -305,17 +307,16 @@ def qc_raw_run(
         else:
             # Integrity: does the downloaded byte stream match ENA's own
             # registered size/checksum for this file? Only meaningful for a
-            # full (uncapped) download.
+            # full (uncapped) download. No pass/fail verdict -- report both
+            # numbers and let whoever reads the report compare them.
             registered_size = str(item.get("file_size", ""))
             if _DIGITS_RE.match(registered_size):
-                status = "PASS" if int(registered_size) == size else "FAIL"
-                add("fastq_size_vs_ena", status,
+                add("fastq_size_vs_ena", "INFO",
                     f"{fname}: downloaded {size} bytes vs ENA registered {registered_size} bytes")
             registered_md5 = item.get("md5", "")
             if registered_md5:
                 actual_md5 = md5_file(dest)
-                status = "PASS" if actual_md5 == registered_md5 else "FAIL"
-                add("fastq_md5_vs_ena", status,
+                add("fastq_md5_vs_ena", "INFO",
                     f"{fname}: md5={actual_md5} vs ENA registered md5={registered_md5}")
 
         findings.extend(fq_lint_qc.lint_fastq(entity_id, entity_name, dest))
@@ -354,23 +355,16 @@ def qc_raw_run(
     if not any_capped and total_fastqc_seqs and links:
         registered_read_count = str(links[0].get("read_count", ""))
         if _DIGITS_RE.match(registered_read_count):
-            status = "PASS" if total_fastqc_seqs == int(registered_read_count) else "WARN"
-            add("read_count_vs_ena", status,
+            add("read_count_vs_ena", "INFO",
                 f"FastQC total sequences (summed across {len(links)} file(s))={total_fastqc_seqs} "
                 f"vs ENA registered read_count={registered_read_count}")
 
     if not any_capped and len(per_file_seq_counts) >= 2:
         # Split R1/R2 mate files (as opposed to a single interleaved fastq)
-        # should have exactly the same number of reads. A mismatch means one
-        # mate is truncated or the pair was assembled incorrectly.
-        distinct_counts = set(per_file_seq_counts.values())
-        if len(distinct_counts) == 1:
-            add("paired_fastq_parity", "PASS",
-                f"All {len(per_file_seq_counts)} mate file(s) have matching read counts "
-                f"({distinct_counts.pop()})")
-        else:
-            detail = ", ".join(f"{fname}={count}" for fname, count in per_file_seq_counts.items())
-            add("paired_fastq_parity", "FAIL", f"Mate files have mismatched read counts: {detail}")
+        # should have exactly the same number of reads -- report the counts;
+        # a human can see a mismatch as easily as this code can.
+        detail = ", ".join(f"{fname}={count}" for fname, count in per_file_seq_counts.items())
+        add("paired_fastq_parity", "INFO", f"Per-mate read counts: {detail}")
 
     if not any_capped and observed_lengths and links:
         base_count = str(links[0].get("base_count", ""))
@@ -410,7 +404,7 @@ def qc_direct_fastq(syn, entity_id: str, entity_name: str,
     except Exception as exc:
         add("fastq_download", "FAIL", f"Could not download from Synapse: {exc}")
         return findings
-    add("fastq_download", "PASS", f"Downloaded {ent.name} from Synapse")
+    add("fastq_download", "INFO", f"Downloaded {ent.name} from Synapse")
 
     findings.extend(fq_lint_qc.lint_fastq(entity_id, entity_name, Path(ent.path)))
 
