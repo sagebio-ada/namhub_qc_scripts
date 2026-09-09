@@ -118,31 +118,49 @@ fraction is outside 50%") with no validated basis, so we removed the judgment
 and kept only the number rather than mislabel it `PASS`. Read `INFO` rows as
 data to interpret yourself, not as a verdict.
 
-| Tier | Check | What it reports | Tool / repo | Verdict basis | Full file needed? |
+Rows are grouped by **what kind of check it is**, not which module runs it —
+that's a more useful cut than the pipeline's internal module boundaries:
+
+- **Metadata cross-check** — compares a declared/registered value against
+  another source: Synapse vs. GEO, or a file's own measured property vs.
+  ENA's registry.
+- **File-content check** — pure inspection of the actual file bytes; nothing
+  external to compare against.
+- **Existence/resolution check** — did we successfully find or fetch the
+  thing at all.
+
+Two checks are genuinely hybrid and got a judgment call rather than a clean
+fit: `kraken2_species_match` inspects file content *and* compares the result
+to GEO's declared species, and `matrix_dimensions` compares two
+independently-derived numbers (the matrix header vs. counted barcode/feature
+lines). Both are filed under Metadata cross-check since the comparison is the
+point of the check, not just the inspection.
+
+| Category | Check | What it reports | Tool / repo | Verdict basis | Full file needed? |
 |---|---|---|---|---|---|
-| Synapse vs. GEO | `platform_vs_geo` | Synapse `platform` vs GEO `sample_instrument_model` (normalized) | `geo_synapse.geo` (geo_dataset_creation repo) for the GEO fetch; comparison is this pipeline's own code | Objective correctness (string match) | No file at all |
-| Synapse vs. GEO | `reference_vs_geo` | Synapse `referenceSet` vs GEO `assembly` | `geo_synapse.geo` (geo_dataset_creation repo) | Objective correctness (substring match) | No file at all |
-| Synapse vs. GEO | `library_version_vs_geo` | Synapse `libraryVersion` vs GEO's reagent-kit description text | `geo_synapse.geo` (geo_dataset_creation repo) | Objective correctness (substring match) | No file at all |
-| Synapse vs. GEO | `library_prep_method_vs_geo` | Synapse `libraryPreparationMethod` vs GEO's reagent-kit description text | `geo_synapse.geo` (geo_dataset_creation repo) | Objective correctness (substring match) | No file at all |
-| Synapse vs. GEO | `geo_lookup` | Flags a raw run whose GSM isn't found in the given GEO series at all | `geo_synapse.geo` (geo_dataset_creation repo) | Objective correctness (lookup) | No file at all |
-| Raw FASTQ vs. ENA | `fastq_resolution` | SRA run accession successfully resolved to real ENA fastq.gz link(s) | `geo_synapse.ena` (geo_dataset_creation repo) | Objective correctness (did it resolve) | No file at all (API lookup only) |
-| Raw FASTQ vs. ENA | `fastq_download` | Download itself succeeded | This pipeline's own code (`requests`) | Objective correctness (did it succeed) | No — reports whatever was requested, capped or full |
-| Raw FASTQ vs. ENA | `fastq_size_vs_ena` | Downloaded byte size vs. ENA's registered `fastq_bytes` | This pipeline's own code vs. ENA registry | Objective correctness (exact match) | **Yes** |
-| Raw FASTQ vs. ENA | `fastq_md5_vs_ena` | Downloaded md5 vs. ENA's registered `fastq_md5` | This pipeline's own code (`hashlib`) vs. ENA registry | Objective correctness (exact match) | **Yes** |
-| Raw FASTQ vs. ENA | `read_count_vs_ena` | FastQC's total sequence count (summed across files) vs. ENA's registered `read_count` | FastQC + ENA registry | Objective correctness (exact match) | **Yes** |
-| Raw FASTQ vs. ENA | `mean_length_vs_registry` | ENA `base_count/read_count`-implied mean length, alongside FastQC's observed length(s) | FastQC + ENA registry | **Informational only** — no threshold, always INFO | **Yes** |
-| Raw FASTQ vs. ENA | `paired_fastq_parity` | Split R1/R2 mate files have matching read counts (skipped for a single interleaved file) | FastQC per-file counts | Objective correctness (exact match) | **Yes** |
-| FASTQ structure | `fq_lint` | Structural integrity — record completeness, valid alphabet, `+` line, matching seq/quality lengths, well-formed quality string | [`fq`](https://github.com/stjude-rust-labs/fq) (stjude-rust-labs) | **Tool's own verdict** (exit code) | No |
-| FastQC content | `fastqc_basic_stats` | Total sequences, sequence length, %GC summary | [FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/) | **Informational only** — no threshold, always INFO | No |
-| FastQC content | `fastqc_module:<name>` | Any FastQC module that isn't a clean PASS — per-base quality, per-sequence quality, per-base/sequence GC content, per-base N content, sequence length distribution, duplication levels, overrepresented sequences, adapter content, k-mer content. For `Per base sequence content`, `Adapter Content`, and `Sequence Duplication Levels` specifically, the metric also names the exact position/adapter/percentage responsible (parsed from `fastqc_data.txt`'s own per-module tables, using FastQC's own published WARN/FAIL criteria) rather than just relaying the pass/warn/fail word | FastQC | **Tool's own verdict** (FastQC's internal per-module thresholds, unmodified) | No |
-| Species/contamination | `kraken2_unclassified` | % of reads not classified against the reference database | [Kraken2](https://github.com/DerrickWood/kraken2) | **Informational only** — no threshold, always INFO | No |
-| Species/contamination | `kraken2_top_species` | Top 5 classified species and their read fractions | Kraken2 | **Informational only** — always INFO | No |
-| Species/contamination | `kraken2_species_match` | % of reads matching the GEO-declared organism | Kraken2 + `geo_synapse.geo` for expected species | **Informational only** — no threshold, always INFO | No |
-| Processed matrix | `processed_completeness` | barcodes/features/matrix trio all present for the sample | `synapseclient` (entity check only) | Objective correctness (all 3 present) | No file at all |
-| Processed matrix | `download:<role>` | Per-file download succeeded | `synapseclient` | Objective correctness (did it succeed) | **Yes** — no capping mechanism exists for matrix files; `syn.get()` always pulls the whole file |
-| Processed matrix | `file_integrity` | barcodes/features files are readable; reports counts | This pipeline's own code (`gzip`) | Objective correctness (readable or not) | **Yes** |
-| Processed matrix | `matrix_integrity` | `matrix.mtx.gz` parses without error | `scipy.io.mmread` | Objective correctness (parses or not) | **Yes** |
-| Processed matrix | `matrix_dimensions` | Matrix shape matches barcode/feature counts | `scipy`/`numpy` | Objective correctness (exact match) | **Yes** |
-| Processed matrix | `matrix_metrics` | Median UMI/cell, median genes/cell, zero-count barcodes, nnz | `numpy` | Informational, WARN only if completely degenerate (zero non-empty cells) | **Yes** |
-| Processed matrix | `empty_barcode_check` | Empty-barcode fraction, alongside the declared raw-vs-filtered `CellrangerOutputClass` | `numpy` | **Informational only** — no threshold, always INFO | **Yes** |
-| Processed matrix | `mito_fraction` | Median mitochondrial read fraction across non-empty barcodes | `numpy` | **Informational only** — always INFO | **Yes** |
+| Metadata cross-check | `platform_vs_geo` | Synapse `platform` vs GEO `sample_instrument_model` (normalized) | `geo_synapse.geo` (geo_dataset_creation repo) for the GEO fetch; comparison is this pipeline's own code | Objective correctness (string match) | No file at all |
+| Metadata cross-check | `reference_vs_geo` | Synapse `referenceSet` vs GEO `assembly` | `geo_synapse.geo` (geo_dataset_creation repo) | Objective correctness (substring match) | No file at all |
+| Metadata cross-check | `library_version_vs_geo` | Synapse `libraryVersion` vs GEO's reagent-kit description text | `geo_synapse.geo` (geo_dataset_creation repo) | Objective correctness (substring match) | No file at all |
+| Metadata cross-check | `library_prep_method_vs_geo` | Synapse `libraryPreparationMethod` vs GEO's reagent-kit description text | `geo_synapse.geo` (geo_dataset_creation repo) | Objective correctness (substring match) | No file at all |
+| Metadata cross-check | `geo_lookup` | Flags a raw run whose GSM isn't found in the given GEO series at all | `geo_synapse.geo` (geo_dataset_creation repo) | Objective correctness (lookup) | No file at all |
+| Metadata cross-check | `fastq_size_vs_ena` | Downloaded byte size vs. ENA's registered `fastq_bytes` | This pipeline's own code vs. ENA registry | Objective correctness (exact match) | **Yes** |
+| Metadata cross-check | `fastq_md5_vs_ena` | Downloaded md5 vs. ENA's registered `fastq_md5` | This pipeline's own code (`hashlib`) vs. ENA registry | Objective correctness (exact match) | **Yes** |
+| Metadata cross-check | `read_count_vs_ena` | FastQC's total sequence count (summed across files) vs. ENA's registered `read_count` | FastQC + ENA registry | Objective correctness (exact match) | **Yes** |
+| Metadata cross-check | `mean_length_vs_registry` | ENA `base_count/read_count`-implied mean length, alongside FastQC's observed length(s) | FastQC + ENA registry | **Informational only** — no threshold, always INFO | **Yes** |
+| Metadata cross-check | `paired_fastq_parity` | Split R1/R2 mate files have matching read counts (skipped for a single interleaved file) | FastQC per-file counts | Objective correctness (exact match) | **Yes** |
+| Metadata cross-check | `matrix_dimensions` | Matrix shape matches barcode/feature counts | `scipy`/`numpy` | Objective correctness (exact match) | **Yes** |
+| Metadata cross-check | `kraken2_species_match` | % of reads matching the GEO-declared organism | Kraken2 + `geo_synapse.geo` for expected species | **Informational only** — no threshold, always INFO | No |
+| File-content check | `fq_lint` | Structural integrity — record completeness, valid alphabet, `+` line, matching seq/quality lengths, well-formed quality string | [`fq`](https://github.com/stjude-rust-labs/fq) (stjude-rust-labs) | **Tool's own verdict** (exit code) | No |
+| File-content check | `fastqc_basic_stats` | Total sequences, sequence length, %GC summary | [FastQC](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/) | **Informational only** — no threshold, always INFO | No |
+| File-content check | `fastqc_module:<name>` | Any FastQC module that isn't a clean PASS — per-base quality, per-sequence quality, per-base/sequence GC content, per-base N content, sequence length distribution, duplication levels, overrepresented sequences, adapter content, k-mer content. For `Per base sequence content`, `Adapter Content`, and `Sequence Duplication Levels` specifically, the metric also names the exact position/adapter/percentage responsible (parsed from `fastqc_data.txt`'s own per-module tables, using FastQC's own published WARN/FAIL criteria) rather than just relaying the pass/warn/fail word | FastQC | **Tool's own verdict** (FastQC's internal per-module thresholds, unmodified) | No |
+| File-content check | `kraken2_unclassified` | % of reads not classified against the reference database | [Kraken2](https://github.com/DerrickWood/kraken2) | **Informational only** — no threshold, always INFO | No |
+| File-content check | `kraken2_top_species` | Top 5 classified species and their read fractions | Kraken2 | **Informational only** — always INFO | No |
+| File-content check | `file_integrity` | barcodes/features files are readable; reports counts | This pipeline's own code (`gzip`) | Objective correctness (readable or not) | **Yes** |
+| File-content check | `matrix_integrity` | `matrix.mtx.gz` parses without error | `scipy.io.mmread` | Objective correctness (parses or not) | **Yes** |
+| File-content check | `matrix_metrics` | Median UMI/cell, median genes/cell, zero-count barcodes, nnz | `numpy` | Informational, WARN only if completely degenerate (zero non-empty cells) | **Yes** |
+| File-content check | `empty_barcode_check` | Empty-barcode fraction, alongside the declared raw-vs-filtered `CellrangerOutputClass` | `numpy` | **Informational only** — no threshold, always INFO | **Yes** |
+| File-content check | `mito_fraction` | Median mitochondrial read fraction across non-empty barcodes | `numpy` | **Informational only** — always INFO | **Yes** |
+| Existence/resolution check | `fastq_resolution` | SRA run accession successfully resolved to real ENA fastq.gz link(s) | `geo_synapse.ena` (geo_dataset_creation repo) | Objective correctness (did it resolve) | No file at all (API lookup only) |
+| Existence/resolution check | `fastq_download` | Download itself succeeded | This pipeline's own code (`requests`) | Objective correctness (did it succeed) | No — reports whatever was requested, capped or full |
+| Existence/resolution check | `processed_completeness` | barcodes/features/matrix trio all present for the sample, with the specific Synapse entity ID behind each role | `synapseclient` (entity check only) | Objective correctness (all 3 present) | No file at all |
+| Existence/resolution check | `download:<role>` | Per-file download succeeded | `synapseclient` | Objective correctness (did it succeed) | **Yes** — no capping mechanism exists for matrix files; `syn.get()` always pulls the whole file |
