@@ -204,15 +204,6 @@ worth adding (that's how Kraken2 and `fq` ended up in this pipeline).
 **"Compared against"** names the external source a result is checked against,
 where the check involves one at all.
 
-**"Verdict basis"** — only two rows in this table can ever produce a real
-`PASS`/`WARN`/`FAIL` judgment: `fq lint`'s exit code and FastQC's own
-built-in per-module thresholds, both a named tool's own established
-judgment, not this pipeline's opinion. Every other row is `INFO` on success —
-reporting both sides of a comparison with no verdict attached, even for an
-exact comparison like a checksum — and `FAIL` only for a genuine operational
-failure (an exception: a network error, a file that won't parse, a required
-file that's missing), never as a graded judgment about the data itself.
-
 The **"Interpreting this"** column calls out where a check's result needs
 domain context to read correctly — several of FastQC's and Kraken2's stock
 thresholds are calibrated for generic sequencing libraries and routinely
