@@ -56,6 +56,7 @@ sys.path.insert(0, str(_HERE))
 import fastq_qc
 import geo_metadata_qc
 import matrix_qc
+import multiqc_qc
 from qc_common import Finding, first_value, make_finding, summarize, write_report_csv
 
 try:
@@ -131,6 +132,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--skip-matrix", action="store_true", help="Skip processed CellRanger matrix QC entirely")
     p.add_argument("--keep-downloads", action="store_true",
                    help="Keep downloaded fastq/matrix files instead of deleting them after QC")
+    p.add_argument("--multiqc", action="store_true",
+                   help="Also run MultiQC over the work directory to produce one aggregated HTML "
+                        "report of the FastQC/Kraken2 results (MultiQC has no module for fq lint or "
+                        "this pipeline's own checks, so it only covers those two tools' output)")
     return p.parse_args(argv)
 
 
@@ -234,6 +239,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(f"\nQC complete: {summarize(findings)}")
     print(f"Report written to {report_path}")
+
+    if args.multiqc:
+        if not multiqc_qc.multiqc_available():
+            print(f"\n{multiqc_qc.MULTIQC_INSTALL_HINT}")
+        else:
+            print("Running MultiQC over the work directory …")
+            try:
+                multiqc_report = multiqc_qc.run_multiqc(work_dir, out_dir)
+                print(f"MultiQC report written to {multiqc_report}")
+            except Exception as exc:
+                print(f"MultiQC failed: {exc}")
 
     return 1 if any(f["status"] == "FAIL" for f in findings) else 0
 

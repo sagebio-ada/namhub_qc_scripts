@@ -79,6 +79,9 @@ python run_scrnaseq_qc.py --synapse-id syn73675040 --max-download-mb 25
 # Also screen for species/contamination (needs a local Kraken2 database):
 python run_scrnaseq_qc.py --synapse-id syn73675040 --geo-accession GSE293390 \
     --max-download-mb 25 --kraken2-db /path/to/k2_standard_08gb
+
+# Also produce one aggregated MultiQC HTML report of the FastQC/Kraken2 results:
+python run_scrnaseq_qc.py --synapse-id syn73675040 --multiqc
 ```
 
 | Flag | Purpose |
@@ -93,6 +96,7 @@ python run_scrnaseq_qc.py --synapse-id syn73675040 --geo-accession GSE293390 \
 | `--skip-fastqc` | Skip the whole raw-read tier (`fq lint` + FastQC + Kraken2 + ENA integrity checks) |
 | `--skip-matrix` | Skip the processed CellRanger matrix tier |
 | `--keep-downloads` | Keep downloaded fastq/matrix files instead of deleting them after QC |
+| `--multiqc` | Also run [MultiQC](https://multiqc.info) over the work directory, producing one aggregated, interactive HTML report of the FastQC and Kraken2 results across all samples. MultiQC doesn't compute anything new — it just visualizes output these two tools already wrote. It has no module for `fq lint`, and its `cellranger` module needs CellRanger's own `web_summary.html` run report, which isn't part of this dataset (only the final matrix files were deposited) — so it covers FastQC/Kraken2 only, never a replacement for `scrnaseq_qc_report.csv`. |
 
 ## Dependencies
 
@@ -107,6 +111,7 @@ External tools, none of which are pip-installable:
 | `kraken2` | [Kraken2](https://github.com/DerrickWood/kraken2) — classifies sequencing reads against a reference database to identify what organism(s)/contaminants they actually came from | `brew install kraken2` | Species/contamination screening |
 | Kraken2 database | A pre-built reference index Kraken2 classifies reads against | Pre-built options at [benlangmead.github.io/aws-indexes/k2](https://benlangmead.github.io/aws-indexes/k2) — "Standard-8" (~5.5GB compressed; a reduced-size index built from NCBI's RefSeq archaea/bacteria/viral/plasmid/human sequences plus UniVec, a database of common vector and adapter sequences) is a reasonable general-purpose default. Extract it and pass the directory via `--kraken2-db`. | Species/contamination screening |
 | `geo-synapse` | A companion Python package (from the [`geo_dataset_creation`](https://github.com/sagebio-ada/geo_dataset_creation) repo) that resolves GEO/SRA accessions to real download links and fetches GEO metadata | `pip install git+https://github.com/sagebio-ada/geo_dataset_creation.git` | Resolving SRA run accessions to real ENA fastq download links, and fetching GEO sample metadata |
+| `multiqc` | [MultiQC](https://multiqc.info) — aggregates other tools' existing output into one interactive HTML report; optional, only used with `--multiqc` | `pip install multiqc`. pip sometimes installs its console script to a user directory not on PATH (e.g. `~/Library/Python/3.x/bin` on macOS) — add that directory to PATH or invoke `multiqc` there directly if `--multiqc` reports it isn't found. | Aggregated HTML report of the FastQC/Kraken2 results |
 
 **Note:** installing `kraken2` via Homebrew pulls in `python@3.14` as a
 dependency, which Homebrew may link as the generic `python3` — silently
@@ -126,6 +131,7 @@ Python runtime dependency, so this is safe).
 | `fq_lint_qc.py` | Wraps `fq lint` for FASTQ structural validation |
 | `kraken_qc.py` | Wraps Kraken2 for species/contamination screening |
 | `matrix_qc.py` | CellRanger matrix.mtx.gz + barcodes/features sanity checks |
+| `multiqc_qc.py` | Wraps MultiQC for an optional aggregated HTML report (`--multiqc`) |
 | `qc_common.py` | Shared finding format, CSV report writer |
 
 ## A note on preliminary status
