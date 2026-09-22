@@ -163,8 +163,8 @@ adapting this for your own data:
 
 Every row in `scrnaseq_qc_report.csv` has `sample`, `check`, `metric` (the
 actual reported number/fact), `status` (`PASS`/`WARN`/`FAIL`/`INFO`), and
-`entity_id` (the specific Synapse file or sample this row is about). 26
-distinct check types in the code (the table below lists 29 rows — `fastqc_module:<name>`
+`entity_id` (the specific Synapse file or sample this row is about). 27
+distinct check types in the code (the table below lists 30 rows — `fastqc_module:<name>`
 is one dynamic check type that names a different FastQC module each time it
 fires, split across 4 rows here for the sake of documenting its most common
 and most interpretation-worthy names individually), grouped below by
@@ -222,6 +222,7 @@ straightforward to read as-is.
 | Metadata cross-check | `fastq_md5_vs_ena` | Downloaded file's checksum vs. the checksum ENA has registered for it | Custom code (MD5) | ENA's record | **Yes** | — |
 | Metadata cross-check | `read_count_vs_ena` | FastQC's total-read count vs. the read count ENA has registered for this run | FastQC | ENA's record | **Yes** | — |
 | Metadata cross-check | `mean_length_vs_registry` | The read length ENA's own read/base counts imply, alongside FastQC's directly observed read length(s) | FastQC | ENA's record | **Yes** | For GSE293390 specifically: a single uniform length here (rather than two distinct lengths for a barcode read and a cDNA read) is confirmed, via directly inspecting the SRA archive with `vdb-dump`, to mean the run has exactly one read per spot (90bp, biological/forward) — no second/technical read segment exists anywhere in the archived spot structure. The run was deposited to SRA as an already-aligned BAM (`bam-load`, not a raw-fastq submission), so the 10x barcode+UMI read was never part of what got archived — not recoverable via `sratoolkit` or any other tool, since it was never stored. The sample-hashtag library needed for demultiplexing is separately unavailable in raw form. |
+| Metadata cross-check | `fastq_layout` | Classifies the run's raw-read layout — paired (separate mate files), interleaved (one file, mates alternating within it), or single-end (one file, only one mate ever present) — from the resolved file count and, for a lone file, a sample of its read headers/lengths (see [`common/fastq_layout.py`](../common/fastq_layout.py), shared across pipelines in this repo) | Custom code | ENA's file count / the file's own content | No for 2+ files (count only); for exactly one file, a sample of reads, not the full file | A heuristic, not authoritative — unusual header conventions could fool it. For GSE293390 specifically, this correctly classifies both raw runs as `single_end`, consistent with the `vdb-dump`-verified explanation under `mean_length_vs_registry` below. |
 | Metadata cross-check | `paired_fastq_parity` | For paired-end runs stored as two separate mate files (not interleaved into one), the read count of each mate | FastQC | — (compares FastQC's own per-file counts to each other) | **Yes** | — |
 | Metadata cross-check | `matrix_dimensions` | The matrix file's own header dimensions, alongside the barcode/feature counts counted from the other two files | Custom code (`scipy`/`numpy`) | — (compares two internally-derived counts) | **Yes** | — |
 | Metadata cross-check | `kraken2_species_match` | % of reads Kraken2 actually classified as the organism GEO says this sample is | Kraken2 | GEO's record | No | A low percentage isn't necessarily concerning for RNA-seq — see `kraken2_unclassified` below. |
