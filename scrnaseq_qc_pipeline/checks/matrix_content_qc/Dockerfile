@@ -1,6 +1,6 @@
 # Build from the scrnaseq_qc_pipeline/ directory:
 #   docker build -f checks/matrix_content_qc/Dockerfile -t qc-matrix-content .
-FROM python:3.11-slim
+FROM python:3.14-slim
 WORKDIR /app
 
 RUN pip install --no-cache-dir numpy scipy
