@@ -1,7 +1,7 @@
 # Build from the scrnaseq_qc_pipeline/ directory:
 #   docker build -f checks/matrix_download/Dockerfile -t qc-matrix-download .
 # Run with SYNAPSE_AUTH_TOKEN set in the environment.
-FROM python:3.11-slim
+FROM python:3.14-slim
 WORKDIR /app
 
 # numpy is a hard module-level import in matrix_qc.py even though this check
