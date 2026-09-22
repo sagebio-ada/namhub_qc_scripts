@@ -14,3 +14,7 @@ usage, and a full breakdown of what it checks.
   own record, verifies downloaded raw sequencing data against the archive's
   own record, runs read-quality/contamination screening, and sanity-checks
   processed (CellRanger) output matrices.
+- [`atacseq_qc_pipeline/`](atacseq_qc_pipeline/README.md) — **planned, no code
+  yet.** A reference list of candidate QC checks for ATAC-seq data.
+- [`bulkrnaseq_qc_pipeline/`](bulkrnaseq_qc_pipeline/README.md) — **planned, no
+  code yet.** A reference list of candidate QC checks for bulk RNA-seq data.
