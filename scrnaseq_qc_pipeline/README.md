@@ -98,6 +98,40 @@ python run_scrnaseq_qc.py --synapse-id syn73675040 --multiqc
 | `--keep-downloads` | Keep downloaded fastq/matrix files instead of deleting them after QC |
 | `--multiqc` | Also run [MultiQC](https://multiqc.info) over the work directory, producing one aggregated, interactive HTML report of the FastQC and Kraken2 results across all samples. MultiQC doesn't compute anything new — it just visualizes output these two tools already wrote. It has no module for `fq lint`, and its `cellranger` module needs CellRanger's own `web_summary.html` run report, which isn't part of this dataset (only the final matrix files were deposited) — so it covers FastQC/Kraken2 only, never a replacement for `scrnaseq_qc_report.csv`. |
 
+### Do you need the full raw fastq, or can you spot-check?
+
+**By default, every raw run's fastq is downloaded in full** — these are
+often multiple GB each. Pass `--max-download-mb` to cap that and spot-check
+instead. Only some checks actually need the full download to mean anything;
+the rest work identically on a small capped sample:
+
+- **Needs the full file**: `fastq_size_vs_ena`, `fastq_md5_vs_ena`,
+  `read_count_vs_ena`, `mean_length_vs_registry`, `paired_fastq_parity` —
+  these need an exact byte-for-byte or read-for-read comparison against
+  ENA's own record, which a capped sample can't give you. Every processed-
+  matrix check (`matrix_dimensions`, `file_integrity`, `matrix_integrity`,
+  `matrix_metrics`, `empty_barcode_check`, `mito_fraction`,
+  `download:<role>`) also always needs a full download — there's no capped
+  option for those files at all.
+- **Works fine on a capped sample**: everything else that touches raw-fastq
+  content — `fq_lint`, `fastqc_basic_stats`, every `fastqc_module:*`, and all
+  three Kraken2 checks (`kraken2_unclassified`, `kraken2_top_species`,
+  `kraken2_species_match`). Pair `--max-download-mb` with `--kraken2-db` for
+  routine runs — classification is slow on full multi-hundred-million-read
+  files.
+- **Never touches file content at all**: the GEO-annotation cross-checks
+  (`platform_vs_geo`, `reference_vs_geo`, `library_version_vs_geo`,
+  `library_prep_method_vs_geo`, `geo_lookup`) and the existence/resolution
+  lookups (`fastq_resolution`, `processed_completeness`) — these are pure
+  metadata/API calls.
+- **Doesn't care either way**: `fastq_download` just reports whether the
+  download itself succeeded, with whatever size was actually requested
+  (capped or full) — there's no "needs the full file" question for it.
+
+The `Full file needed?` column in "Metrics generated" below has the
+per-check answer (`Yes` / `No` / `No file at all`) if you need to check one
+specifically.
+
 ## Dependencies
 
 Python: `synapseclient`, `numpy`, `scipy`, `requests` (see repo-root `requirements.txt`).
