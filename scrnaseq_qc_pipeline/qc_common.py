@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Union
 
@@ -44,6 +45,15 @@ def write_report_csv(findings: Iterable[Finding], path: Path) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow({k: row.get(k, "") for k in REPORT_FIELDS})
+
+
+def write_findings_json(findings: Iterable[Finding], path: Path) -> None:
+    """Write Findings as a plain JSON array -- the contract every dockerized
+    checks/*/run.py writes to its --output path, for a driver script (or a
+    future Nextflow process) to read back without sharing Python objects."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fh:
+        json.dump(list(findings), fh, indent=2)
 
 
 def summarize(findings: List[Finding]) -> str:
