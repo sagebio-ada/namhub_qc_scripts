@@ -1,0 +1,16 @@
+name: namhub_atac_qc
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - bracken
+  - fq
+  - kraken2=2.1.6
+  - bedtools
+  - idr
+  # macs2 is not installed: the conda build does not load on this cluster (macs2_cluster.sh uses the module)
+  - numpy<1.24    # idr 2.0.4 breaks on numpy >= 1.24
+  - samtools
+  - scipy
+  - ucsc-bedclip
