@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import List
 
-from qc_common import Finding, make_finding
+from scrnaseq_common import Finding, make_finding
 
 FQ_INSTALL_HINT = (
     "fq was not found on PATH. Download a prebuilt binary for your platform from "

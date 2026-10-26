@@ -40,7 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from multiqc_qc import run_multiqc  # noqa: E402
-from qc_common import DCQC_ERROR, DCQC_PASS, emit_dcqc_metrics, emit_dcqc_reason  # noqa: E402
+from scrnaseq_common import DCQC_ERROR, DCQC_PASS, emit_dcqc_metrics, emit_dcqc_reason  # noqa: E402
 
 
 def main() -> int:

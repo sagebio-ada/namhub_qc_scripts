@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from matrix_qc import check_processed_completeness, download_matrix_files  # noqa: E402
-from qc_common import write_findings_json  # noqa: E402
+from scrnaseq_common import write_findings_json  # noqa: E402
 
 try:
     import synapseclient

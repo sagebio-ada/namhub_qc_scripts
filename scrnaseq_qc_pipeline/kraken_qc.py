@@ -33,7 +33,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional
 
-from qc_common import Finding, make_finding
+from scrnaseq_common import Finding, make_finding
 
 KRAKEN2_INSTALL_HINT = (
     "kraken2 was not found on PATH. Install it with 'brew install kraken2', then "

@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from fastq_qc import download_from_synapse  # noqa: E402
-from qc_common import write_findings_json  # noqa: E402
+from scrnaseq_common import write_findings_json  # noqa: E402
 
 try:
     import synapseclient

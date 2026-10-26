@@ -52,7 +52,7 @@ _HERE = Path(__file__).resolve().parent
 _PIPELINE_DIR = _HERE.parent
 sys.path.insert(0, str(_PIPELINE_DIR))
 
-from qc_common import Finding, make_finding, summarize, write_report_csv  # noqa: E402
+from scrnaseq_common import Finding, make_finding, summarize, write_report_csv  # noqa: E402
 import run_scrnaseq_qc as native  # noqa: E402  -- reuses un-dockerized Synapse-tree-walking glue
 
 CHECKS_DIR = _PIPELINE_DIR / "checks"

@@ -127,10 +127,13 @@ spec, written by py-dcqc's own maintainers for exactly this purpose:
 - **`run.py`** takes the file(s) as **bare filenames, positional, relative to
   the working directory** (nf-dcqc stages each file there as a symlink) —
   never a flag, never a directory prefix. Writes **one JSON object of
-  metrics to stdout** (`qc_common.emit_dcqc_metrics`) and, on a non-pass
-  result, a short reason to **stderr** (`qc_common.emit_dcqc_reason`).
+  metrics to stdout** (`scrnaseq_common.emit_dcqc_metrics`) and, on a non-pass
+  result, a short reason to **stderr** (`scrnaseq_common.emit_dcqc_reason`).
   Nothing else goes to stdout — any other text makes the JSON invalid.
-- **Exit code is 3-way**, not 2-way (`qc_common.DCQC_PASS`/`DCQC_FAIL`/
+  (`scrnaseq_common.py` — formerly `qc_common.py`, renamed to stop colliding
+  with the unrelated repo-root `qc_common/` package used by the other
+  pipelines.)
+- **Exit code is 3-way**, not 2-way (`scrnaseq_common.DCQC_PASS`/`DCQC_FAIL`/
   `DCQC_ERROR` = 0/1/2): `0` the file passed; `1` a genuine tool-native
   bad-file verdict; `2` the check itself couldn't run (crash, missing
   binary) — not a verdict about the data. If the check has no validated
@@ -170,7 +173,7 @@ upstream).
 
 Keep the simpler, original contract: `run.py` takes identifying flags (an
 entity/sample id) and `--output PATH`, writes a **JSON array of Findings**
-to it (`qc_common.write_findings_json`), exits `0` whenever it produced
+to it (`scrnaseq_common.write_findings_json`), exits `0` whenever it produced
 valid output (including a FAIL finding — that's the check doing its job)
 and non-zero only if the wrapper's own control flow crashed. `Dockerfile`
 keeps its `ENTRYPOINT` — these were never going to be judged by `dcqc

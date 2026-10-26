@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from qc_common import Finding, make_finding
+from scrnaseq_common import Finding, make_finding
 
 REQUIRED_ROLES = {"barcodes", "features", "matrix"}
 

@@ -37,7 +37,7 @@ from urllib3.util.retry import Retry
 
 import fq_lint_qc
 import kraken_qc
-from qc_common import Finding, make_finding
+from scrnaseq_common import Finding, make_finding
 
 try:
     from geo_synapse import ena as _ena

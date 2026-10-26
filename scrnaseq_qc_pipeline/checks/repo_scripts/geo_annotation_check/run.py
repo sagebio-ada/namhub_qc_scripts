@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from geo_metadata_qc import check_geo_annotations  # noqa: E402
-from qc_common import make_finding, write_findings_json  # noqa: E402
+from scrnaseq_common import make_finding, write_findings_json  # noqa: E402
 
 
 def main() -> int:

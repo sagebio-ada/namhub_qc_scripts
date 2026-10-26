@@ -22,9 +22,12 @@ These follow the real py-dcqc contract: no `ENTRYPOINT`/`CMD` in the
 Dockerfile, invoked with bare filenames relative to the working directory,
 a 3-way exit code (`0` pass / `1` fail — a genuine tool-native verdict /
 `2` error — the check itself couldn't run), metrics as one JSON object on
-stdout, a short reason on stderr. See `qc_common.py`'s `DCQC_PASS`/
+stdout, a short reason on stderr. See `scrnaseq_common.py`'s `DCQC_PASS`/
 `DCQC_FAIL`/`DCQC_ERROR`/`emit_dcqc_metrics`/`emit_dcqc_reason`, and each
-check's own `run.py` docstring for its specific exit-code mapping.
+check's own `run.py` docstring for its specific exit-code mapping. (This
+module was renamed from `qc_common.py` — that name now belongs to the
+repo-root `qc_common/` package shared across the other pipelines; the two
+are unrelated and were colliding in name only.)
 
 Current members: `fq_lint`, `fastqc`, `kraken2_qc`, `matrix_content_qc`,
 `fastq_aggregate`, `multiqc`.
@@ -69,7 +72,7 @@ Everything in this folder is a check that:
 So `repo_scripts/` really means: **our own scripts, run by our own tooling,
 living outside py-dcqc's world entirely** — not a py-dcqc test category.
 They keep this repo's original `--output <findings.json>` contract (see
-`qc_common.write_findings_json`), not the dcqc exit-code contract, since
+`scrnaseq_common.write_findings_json`), not the dcqc exit-code contract, since
 they were never going to be judged by `dcqc compute-test` in the first
 place. The plan is to run these via this repo's **own** Nextflow pipeline
 (separate from nf-dcqc) once that's built — not to make them py-dcqc tests.
@@ -78,24 +81,15 @@ Current members: `matrix_download`, `synapse_fastq_download`,
 `fastq_download`, `fastq_resolution`, `geo_metadata_fetch`,
 `geo_annotation_check`.
 
-## A note on `fastq_download`
+## Decided: `fastq_download`'s comparison half and `geo_annotation_check` stay in `repo_scripts/`
 
-This one is a hybrid: it does its own HTTPS fetch (why it's in
-`repo_scripts/`, not `py_dcqc/`) *and* a size/md5 comparison against ENA's
-registry once the file is local. The comparison half alone — given an
-already-staged file plus the registered size/md5 as plain scalars, no
-network — would qualify as a legitimate 6th `py_dcqc/` check. It hasn't
-been split out; this is a natural follow-up if tighter py-dcqc alignment is
-wanted later.
-
-## An open question: `geo_annotation_check`
-
-By the same reasoning that moved `fastq_aggregate` into `py_dcqc/` (pure
-computation over already-staged JSON, no network/credentials at runtime),
-`geo_annotation_check` arguably qualifies too — it only compares two
-already-fetched JSON dicts (`annotations.json`, `geo_metadata.json`); the
-network call that produced them already happened in the separate
-`geo_metadata_fetch` step. It's kept in `repo_scripts/` for now since this
-hasn't been explicitly decided either way — revisit it together with
-`fastq_download`'s split if/when this repo tightens py-dcqc alignment
-further.
+Both satisfy the `py_dcqc/` membership bullets on paper — `fastq_download`'s
+size/md5-against-ENA comparison, and `geo_annotation_check`'s diff of two
+already-fetched JSON dicts, are each pure computation over already-staged
+data with no network or credentials at runtime. But satisfying the
+criteria isn't the same as being worth moving: neither check is actually
+going to run through py-dcqc/nf-dcqc in practice, so reclassifying them
+into `py_dcqc/` would just relocate the code without changing how either
+one is invoked. Decision: leave both where they are. `fastq_download`
+stays a single hybrid script (fetch + comparison, unsplit); `geo_annotation_check`
+stays in `repo_scripts/`.
