@@ -1,5 +1,5 @@
 # Build from the scrnaseq_qc_pipeline/ directory:
-#   docker build -f checks/external/fq_lint/Dockerfile -t qc-fq-lint .
+#   docker build -f checks/py_dcqc/fq_lint/Dockerfile -t qc-fq-lint .
 #
 # No biocontainers/quay.io image exists for stjude-rust-labs/fq, so this
 # fetches the prebuilt Linux release binary directly. Pin/verify the version
@@ -30,5 +30,5 @@ ENV HOME=/tmp
 ENV PYTHONDONTWRITEBYTECODE=1
 
 COPY qc_common.py fq_lint_qc.py /app/
-COPY checks/external/fq_lint/run.py /app/run.py
+COPY checks/py_dcqc/fq_lint/run.py /app/run.py
 RUN chmod 0755 /app/run.py

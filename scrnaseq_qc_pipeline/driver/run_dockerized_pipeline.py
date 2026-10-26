@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local end-to-end driver for the dockerized scRNA-seq QC checks.
 
-Chains the checks/{external,internal}/*/{run.py, Dockerfile} containers
+Chains the checks/{py_dcqc,repo_scripts}/*/{run.py, Dockerfile} containers
 together against one shared, host-mounted work directory, mirroring
 run_scrnaseq_qc.py's own control-flow branching (SRA vs. direct-upload,
 --geo-accession given or not, loop over mate files, aggregate after) -- so
@@ -10,14 +10,14 @@ run on the same sample, as a validation that dockerizing the checks didn't
 change their behavior.
 
 Two invocation styles, matching the two check categories:
-  - checks/external/*: invoked exactly the way nf-dcqc's RUN_PROCESS would
+  - checks/py_dcqc/*: invoked exactly the way nf-dcqc's RUN_PROCESS would
     (see Sage-Bionetworks-Workflows/py-dcqc#96) -- a fresh task directory
     holding only the symlinked input file(s), run as the current host user,
     judged only by exit_code.txt/std_out.txt/std_err.txt. This driver's own
     report is rebuilt from that raw 3-way result, since py-dcqc's one-test-
     one-verdict model doesn't preserve this pipeline's original per-module
     Finding granularity 1:1 -- see the adapter functions below.
-  - checks/internal/*: invoked with this repo's own --output-a-Findings-JSON
+  - checks/repo_scripts/*: invoked with this repo's own --output-a-Findings-JSON
     contract, unchanged from before this split (these were never going to
     be real py-dcqc external tests -- see the dockerize-checks skill).
 
@@ -27,7 +27,7 @@ un-dockerized glue, reused directly from run_scrnaseq_qc.py.
 
 Usage
 -----
-    # Build every checks/{external,internal}/*/Dockerfile, then run:
+    # Build every checks/{py_dcqc,repo_scripts}/*/Dockerfile, then run:
     python driver/run_dockerized_pipeline.py --synapse-id syn73675040 \\
         --geo-accession GSE293390 --output-dir output/docker_qc --build
 
@@ -36,7 +36,7 @@ Usage
         --output-dir output/docker_qc
 
 Requires Docker running locally. Images are tagged `qc-<check-name>`
-(underscores -> hyphens), e.g. checks/external/fastq_download -> qc-fastq-download.
+(underscores -> hyphens), e.g. checks/repo_scripts/fastq_download -> qc-fastq-download.
 """
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ def image_tag(check_name: str) -> str:
 
 
 def build_all_images() -> None:
-    for category in ("external", "internal"):
+    for category in ("py_dcqc", "repo_scripts"):
         for check_dir in sorted((CHECKS_DIR / category).iterdir()):
             dockerfile = check_dir / "Dockerfile"
             if not dockerfile.exists():
@@ -77,7 +77,7 @@ def build_all_images() -> None:
             )
 
 
-# --- checks/internal/* invocation (unchanged --output-JSON contract) ------
+# --- checks/repo_scripts/* invocation (unchanged --output-JSON contract) ------
 
 
 def docker_run(check_name: str, args: List[str], work_dir: Path,
@@ -105,7 +105,7 @@ def read_json(path: Path) -> dict:
         return json.load(fh)
 
 
-# --- checks/external/* invocation (real nf-dcqc RUN_PROCESS semantics) ----
+# --- checks/py_dcqc/* invocation (real nf-dcqc RUN_PROCESS semantics) ----
 
 
 def docker_run_external(
@@ -226,7 +226,7 @@ def run_kraken2_external(
 
     if exit_code != 0:
         # Always an operational failure for this check -- it has no real
-        # FAIL verdict of its own (see checks/external/kraken2_qc/run.py).
+        # FAIL verdict of its own (see checks/py_dcqc/kraken2_qc/run.py).
         return [make_finding(entity_id, sample_name, "kraken2", "FAIL", reason or "Kraken2 classification failed")]
 
     findings = [
@@ -474,7 +474,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--keep-files", action="store_true")
     p.add_argument("--skip-fastqc", action="store_true")
     p.add_argument("--skip-matrix", action="store_true")
-    p.add_argument("--build", action="store_true", help="Build every checks/{external,internal}/*/Dockerfile before running")
+    p.add_argument("--build", action="store_true", help="Build every checks/{py_dcqc,repo_scripts}/*/Dockerfile before running")
     return p.parse_args(argv)
 
 

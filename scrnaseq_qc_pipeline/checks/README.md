@@ -1,13 +1,14 @@
-# `checks/external/` vs `checks/internal/`
+# `checks/py_dcqc/` vs `checks/repo_scripts/`
 
 Two categories, and the split is **not** simply "wraps a tool" vs. "doesn't."
-It follows py-dcqc's own real distinction (see
-[Sage-Bionetworks-Workflows/py-dcqc#96](https://github.com/Sage-Bionetworks-Workflows/py-dcqc/pull/96),
+It follows py-dcqc's own real distinction between internal and external tests
+(see [Sage-Bionetworks-Workflows/py-dcqc#96](https://github.com/Sage-Bionetworks-Workflows/py-dcqc/pull/96),
 "Internal and External Tests"): **where does the business logic run** —
 inside py-dcqc's own Python process, or as a separately-invoked
-command/container.
+command/container. (Folder names here avoid py-dcqc's own "internal"/
+"external" vocabulary on purpose — see why under `repo_scripts/` below.)
 
-## `external/` — genuine py-dcqc `ExternalBaseTest` candidates
+## `py_dcqc/` — genuine py-dcqc `ExternalBaseTest` candidates
 
 A check belongs here only if it satisfies **all** of:
 - It wraps an external tool, or is pure computation with no network/tool
@@ -40,7 +41,7 @@ they still satisfy every bullet above, with a documented deviation each
   the three reserved output files — the report is this check's entire
   purpose, unlike a validator whose only job is a verdict.
 
-## `internal/` — everything else that still needs to run as its own script
+## `repo_scripts/` — our own scripts, our own contract
 
 **Important: this is not the same thing as py-dcqc's own `InternalBaseTest`.**
 A real py-dcqc internal test has *no* separate script or container at all —
@@ -49,7 +50,9 @@ its Python code is contributed directly into py-dcqc's own package, and
 third py-dcqc category for "a standalone script that isn't merged into
 py-dcqc's codebase" — if logic needs to run as its own process, py-dcqc
 calls that an *external* test, full stop, regardless of whether it wraps a
-tool.
+tool. That's exactly why this folder isn't called `internal/`: nothing in
+it is a py-dcqc internal test, and naming it that way invited exactly that
+confusion.
 
 Everything in this folder is a check that:
 - Could, in principle, become a real `InternalBaseTest` (pure Python, no
@@ -63,7 +66,7 @@ Everything in this folder is a check that:
   `File.stage()` before any test runs, keyed off the file's registered
   `syn://`/HTTPS URL. There's no py-dcqc test to write for this.
 
-So `internal/` really means: **our own scripts, run by our own tooling,
+So `repo_scripts/` really means: **our own scripts, run by our own tooling,
 living outside py-dcqc's world entirely** — not a py-dcqc test category.
 They keep this repo's original `--output <findings.json>` contract (see
 `qc_common.write_findings_json`), not the dcqc exit-code contract, since
@@ -77,21 +80,22 @@ Current members: `matrix_download`, `synapse_fastq_download`,
 
 ## A note on `fastq_download`
 
-This one is a hybrid: it does its own HTTPS fetch (why it's `internal/`,
-not `external/`) *and* a size/md5 comparison against ENA's registry once
-the file is local. The comparison half alone — given an already-staged file
-plus the registered size/md5 as plain scalars, no network — would qualify
-as a legitimate 6th external test. It hasn't been split out; this is a
-natural follow-up if tighter py-dcqc alignment is wanted later.
+This one is a hybrid: it does its own HTTPS fetch (why it's in
+`repo_scripts/`, not `py_dcqc/`) *and* a size/md5 comparison against ENA's
+registry once the file is local. The comparison half alone — given an
+already-staged file plus the registered size/md5 as plain scalars, no
+network — would qualify as a legitimate 6th `py_dcqc/` check. It hasn't
+been split out; this is a natural follow-up if tighter py-dcqc alignment is
+wanted later.
 
 ## An open question: `geo_annotation_check`
 
-By the same reasoning that moved `fastq_aggregate` here-to-external
-(pure computation over already-staged JSON, no network/credentials at
-runtime), `geo_annotation_check` arguably qualifies too — it only compares
-two already-fetched JSON dicts (`annotations.json`, `geo_metadata.json`);
-the network call that produced them already happened in the separate
-`geo_metadata_fetch` step. It's kept in `internal/` for now since this
+By the same reasoning that moved `fastq_aggregate` into `py_dcqc/` (pure
+computation over already-staged JSON, no network/credentials at runtime),
+`geo_annotation_check` arguably qualifies too — it only compares two
+already-fetched JSON dicts (`annotations.json`, `geo_metadata.json`); the
+network call that produced them already happened in the separate
+`geo_metadata_fetch` step. It's kept in `repo_scripts/` for now since this
 hasn't been explicitly decided either way — revisit it together with
 `fastq_download`'s split if/when this repo tightens py-dcqc alignment
 further.

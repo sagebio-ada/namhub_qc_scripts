@@ -1,5 +1,5 @@
 # Build from the scrnaseq_qc_pipeline/ directory:
-#   docker build -f checks/external/fastqc/Dockerfile -t qc-fastqc .
+#   docker build -f checks/py_dcqc/fastqc/Dockerfile -t qc-fastqc .
 #
 # py-dcqc ExternalBaseTest image (Sage-Bionetworks-Workflows/py-dcqc#96):
 # no ENTRYPOINT/CMD -- nf-dcqc supplies the full command. Test it the same
@@ -25,5 +25,5 @@ ENV HOME=/tmp
 ENV PYTHONDONTWRITEBYTECODE=1
 
 COPY qc_common.py fastq_qc.py fq_lint_qc.py kraken_qc.py /app/
-COPY checks/external/fastqc/run.py /app/run.py
+COPY checks/py_dcqc/fastqc/run.py /app/run.py
 RUN chmod 0755 /app/run.py

@@ -1,5 +1,5 @@
 # Build from the scrnaseq_qc_pipeline/ directory:
-#   docker build -f checks/external/kraken2_qc/Dockerfile -t qc-kraken2 .
+#   docker build -f checks/py_dcqc/kraken2_qc/Dockerfile -t qc-kraken2 .
 #
 # py-dcqc ExternalBaseTest image (Sage-Bionetworks-Workflows/py-dcqc#96):
 # no ENTRYPOINT/CMD -- nf-dcqc supplies the full command. Test it the same
@@ -33,5 +33,5 @@ ENV HOME=/tmp
 ENV PYTHONDONTWRITEBYTECODE=1
 
 COPY qc_common.py kraken_qc.py /app/
-COPY checks/external/kraken2_qc/run.py /app/run.py
+COPY checks/py_dcqc/kraken2_qc/run.py /app/run.py
 RUN chmod 0755 /app/run.py

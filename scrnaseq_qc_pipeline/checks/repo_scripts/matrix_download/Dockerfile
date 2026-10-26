@@ -1,5 +1,5 @@
 # Build from the scrnaseq_qc_pipeline/ directory:
-#   docker build -f checks/matrix_download/Dockerfile -t qc-matrix-download .
+#   docker build -f checks/repo_scripts/matrix_download/Dockerfile -t qc-matrix-download .
 # Run with SYNAPSE_AUTH_TOKEN set in the environment.
 FROM python:3.14-slim
 WORKDIR /app
@@ -10,6 +10,6 @@ WORKDIR /app
 RUN pip install --no-cache-dir synapseclient numpy
 
 COPY qc_common.py matrix_qc.py /app/
-COPY checks/internal/matrix_download/run.py /app/run.py
+COPY checks/repo_scripts/matrix_download/run.py /app/run.py
 
 ENTRYPOINT ["python", "run.py"]

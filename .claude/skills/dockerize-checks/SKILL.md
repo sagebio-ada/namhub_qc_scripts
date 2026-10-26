@@ -100,23 +100,26 @@ real operational failure (an exception, not a data-quality opinion).
 Verify the refactor didn't change behavior before moving on — run the
 before/after versions against the same fixture input and diff their output.
 
-## 4. Wrap each resulting unit in `checks/{external,internal}/<name>/{run.py, Dockerfile}`
+## 4. Wrap each resulting unit in `checks/{py_dcqc,repo_scripts}/<name>/{run.py, Dockerfile}`
 
 Directory layout, one pair per check, sorted into the category decided in
-step 2:
+step 2. Name the two folders for what they actually are, not py-dcqc's own
+"internal"/"external" vocabulary — a folder called `internal/` invites
+exactly the confusion the note under the second folder below exists to
+head off:
 
 ```
 <pipeline_dir>/
   <existing modules, refactored per step 3 — unchanged otherwise>
   checks/
-    README.md        # the external/internal distinction, written out in full
-    external/
+    README.md        # the py_dcqc/repo_scripts distinction, written out in full
+    py_dcqc/
       <check_name>/{run.py, Dockerfile}
-    internal/
+    repo_scripts/
       <check_name>/{run.py, Dockerfile}
 ```
 
-### `external/` — the real py-dcqc `ExternalBaseTest` contract
+### `py_dcqc/` — the real py-dcqc `ExternalBaseTest` contract
 
 Follow Sage-Bionetworks-Workflows/py-dcqc#96 exactly — it is the canonical
 spec, written by py-dcqc's own maintainers for exactly this purpose:
@@ -140,7 +143,7 @@ spec, written by py-dcqc's own maintainers for exactly this purpose:
   `ENV HOME=/tmp` and `ENV PYTHONDONTWRITEBYTECODE=1` (the container runs as
   an arbitrary non-root UID with no home directory). `chmod 0755` the copied
   `run.py`. Comment the Dockerfile with the exact `docker run` invocation
-  that tests it the way nf-dcqc would (see any `checks/external/*/Dockerfile`
+  that tests it the way nf-dcqc would (see any `checks/py_dcqc/*/Dockerfile`
   in this repo for the template) — this is also how you manually verify the
   image before anything automated does.
 - If a check needs an artifact from an earlier step (step 5) for something
@@ -155,7 +158,15 @@ spec, written by py-dcqc's own maintainers for exactly this purpose:
   `python:3.14-slim` + pip installs) only for pure-language logic, or a tool
   with no existing community image.
 
-### `internal/` — our own scripts, our own contract
+### `repo_scripts/` — our own scripts, our own contract
+
+Not py-dcqc's own "internal test" category — see `checks/README.md`'s fuller
+explanation of why that name was avoided (a real py-dcqc internal test has
+no separate script at all; its code is contributed into py-dcqc's own
+package). This folder is simply everything that still needs to run as its
+own process but doesn't meet the `py_dcqc/` bar in step 2 (needs network or
+credentials at runtime, or has no tool dependency and was never contributed
+upstream).
 
 Keep the simpler, original contract: `run.py` takes identifying flags (an
 entity/sample id) and `--output PATH`, writes a **JSON array of Findings**
@@ -164,7 +175,7 @@ valid output (including a FAIL finding — that's the check doing its job)
 and non-zero only if the wrapper's own control flow crashed. `Dockerfile`
 keeps its `ENTRYPOINT` — these were never going to be judged by `dcqc
 compute-test`, so there's no reason to drop the convenience. Do not try to
-force these into the external contract just for consistency; see
+force these into the `py_dcqc/` contract just for consistency; see
 `scrnaseq_qc_pipeline/checks/README.md` for exactly which checks belong here
 and why.
 
@@ -192,9 +203,9 @@ shared mounted work directory, for the team's own local validation — not a
 production orchestrator. Two invocation styles, matching step 4's two
 contracts:
 
-- **`internal/` checks**: unchanged — one shared mount, pass `--output`,
+- **`repo_scripts/` checks**: unchanged — one shared mount, pass `--output`,
   read the Findings JSON back from the host.
-- **`external/` checks**: invoke them exactly the way nf-dcqc's
+- **`py_dcqc/` checks**: invoke them exactly the way nf-dcqc's
   `RUN_PROCESS` would (`modules/local/run_process.nf` in
   Sage-Bionetworks-Workflows/nf-dcqc) — a fresh task directory per
   invocation holding only the input file(s) symlinked in by their bare
@@ -229,9 +240,9 @@ Other driver rules, for both styles:
 
 `scrnaseq_qc_pipeline/` in this repo applies every step above:
 `fastq_qc.py` and `matrix_qc.py` hold the refactored composable functions
-(step 3), `scrnaseq_qc_pipeline/checks/{external,internal}/*/` holds the
+(step 3), `scrnaseq_qc_pipeline/checks/{py_dcqc,repo_scripts}/*/` holds the
 per-check `run.py`/`Dockerfile` pairs (step 4, with
-`scrnaseq_qc_pipeline/checks/README.md` writing out the external/internal
+`scrnaseq_qc_pipeline/checks/README.md` writing out the py_dcqc/repo_scripts
 distinction in full), and `scrnaseq_qc_pipeline/driver/run_dockerized_pipeline.py`
 is the local end-to-end driver (step 6, with both invocation styles). Read
 those as a concrete reference when applying this procedure to a new script.

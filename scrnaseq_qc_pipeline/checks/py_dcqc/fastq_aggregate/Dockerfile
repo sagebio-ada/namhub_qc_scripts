@@ -1,5 +1,5 @@
 # Build from the scrnaseq_qc_pipeline/ directory:
-#   docker build -f checks/external/fastq_aggregate/Dockerfile -t qc-fastq-aggregate .
+#   docker build -f checks/py_dcqc/fastq_aggregate/Dockerfile -t qc-fastq-aggregate .
 #
 # py-dcqc ExternalBaseTest image (Sage-Bionetworks-Workflows/py-dcqc#96):
 # no ENTRYPOINT/CMD -- nf-dcqc supplies the full command. Test it the same
@@ -23,5 +23,5 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # this check only calls aggregate_fastq_checks() -- both are copied so the
 # import succeeds.
 COPY qc_common.py fastq_qc.py fq_lint_qc.py kraken_qc.py /app/
-COPY checks/external/fastq_aggregate/run.py /app/run.py
+COPY checks/py_dcqc/fastq_aggregate/run.py /app/run.py
 RUN chmod 0755 /app/run.py

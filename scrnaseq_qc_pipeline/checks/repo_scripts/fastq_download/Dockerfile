@@ -1,5 +1,5 @@
 # Build from the scrnaseq_qc_pipeline/ directory:
-#   docker build -f checks/internal/fastq_download/Dockerfile -t qc-fastq-download .
+#   docker build -f checks/repo_scripts/fastq_download/Dockerfile -t qc-fastq-download .
 FROM python:3.14-slim
 WORKDIR /app
 
@@ -10,6 +10,6 @@ RUN pip install --no-cache-dir requests
 # import succeeds; see the dockerize-checks skill for why modules are copied
 # whole rather than further split.
 COPY qc_common.py fastq_qc.py fq_lint_qc.py kraken_qc.py /app/
-COPY checks/internal/fastq_download/run.py /app/run.py
+COPY checks/repo_scripts/fastq_download/run.py /app/run.py
 
 ENTRYPOINT ["python", "run.py"]

@@ -1,5 +1,5 @@
 # Build from the scrnaseq_qc_pipeline/ directory:
-#   docker build -f checks/external/multiqc/Dockerfile -t qc-multiqc .
+#   docker build -f checks/py_dcqc/multiqc/Dockerfile -t qc-multiqc .
 #
 # py-dcqc ExternalBaseTest image (Sage-Bionetworks-Workflows/py-dcqc#96):
 # no ENTRYPOINT/CMD -- nf-dcqc supplies the full command. Test it the same
@@ -25,5 +25,5 @@ ENV HOME=/tmp
 ENV PYTHONDONTWRITEBYTECODE=1
 
 COPY qc_common.py multiqc_qc.py /app/
-COPY checks/external/multiqc/run.py /app/run.py
+COPY checks/py_dcqc/multiqc/run.py /app/run.py
 RUN chmod 0755 /app/run.py
