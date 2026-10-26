@@ -57,19 +57,30 @@ dockerized checks, and PR #5's nf-core-summarizing `rnaseq_qc_pipeline/`/
 
 | Check | Already built? |
 |---|---|
-| Structural validity (`fq lint`) | ✓ both architectures (`scrnaseq_qc_pipeline/checks/py_dcqc/fq_lint`, `qc_common/fastq_sections.fq_lint`) |
-| Read quality (FastQC) | ✓ both (`checks/py_dcqc/fastqc`, `qc_common/fastq_sections.fastqc`) |
-| Species/contamination (Kraken2 [+ Bracken]) | ✓ both (`checks/py_dcqc/kraken2_qc`, `qc_common/fastq_sections.contaminants`) |
+| Structural validity (`fq lint`) | ✓ **genuinely shared** — `qc_common/fq_lint.py` runs and parses `fq lint`; `scrnaseq_qc_pipeline/checks/py_dcqc/fq_lint` and `qc_common/fastq_sections.fq_lint` are both thin wrappers over it |
+| Read quality (FastQC) | ✓ both, but via different integration points, not shared code (`checks/py_dcqc/fastqc` runs FastQC itself per-file; `qc_common/fastq_sections.fastqc` reads MultiQC's already-aggregated tables from the nf-core pipeline's own upstream FastQC step) |
+| Species/contamination (Kraken2 [+ Bracken]) | ✓ both, but not equivalent — `checks/py_dcqc/kraken2_qc` runs Kraken2 alone; `qc_common/fastq_sections.contaminants` runs Kraken2 **and** Bracken, re-estimating species abundance from Bracken's corrected counts (a real accuracy improvement the scrnaseq side lacks) |
 | Aggregated report (MultiQC) | ✓ `scrnaseq_qc_pipeline/` only (`checks/py_dcqc/multiqc`) |
 | SRA→ENA resolution / ENA registry size-md5-readcount check | ✓ `scrnaseq_qc_pipeline/` only (`checks/repo_scripts/fastq_resolution`, `fastq_download`, `checks/py_dcqc/fastq_aggregate`) |
 | GEO metadata fetch + Synapse-annotation cross-check | ✓ `scrnaseq_qc_pipeline/` only — conditional: only applies when the series is actually GEO-deposited (true for scRNA-seq/bulk RNA-seq/ATAC-seq test datasets seen so far; **not** WGS, which is normally dbGaP/SRA) |
 
-**This tier is already duplicated between the two architectures** — one
-dockerized, py-dcqc-contract-aligned implementation in
-`scrnaseq_qc_pipeline/checks/py_dcqc/`, and one plain-Python,
-nf-core-output-summarizing implementation in `qc_common/fastq_sections.py`.
-Worth reconciling into one shared implementation before either grows
-further, rather than letting both evolve independently.
+**fq lint has been consolidated** into one shared implementation
+(`qc_common/fq_lint.py`); both architectures' own fq-lint checks are now
+thin wrappers that each keep their own judgment logic (exit-code-based
+PASS/FAIL for the py-dcqc contract vs. a TSV status column) on top of it.
+Consolidating this also fixed a real bug on the nf-core side: its fq-lint
+invocation never passed `--lint-mode log`, so it inherited `fq lint`'s
+default "panic on first error" behavior — any file with more than one
+structural issue only ever reported the first. The shared implementation
+always uses log mode.
+
+FastQC and Kraken2/Bracken remain genuinely divergent rather than merely
+duplicated — FastQC because the two sides integrate with it at different
+points (run-it-yourself vs. consume-nf-core's-own-output), and Kraken2
+because the nf-core side's Bracken step is a real quality improvement, not
+an equivalent reimplementation. Unifying either would mean changing one
+side's behavior, not just refactoring — a decision to make deliberately,
+not as a side effect of deduplication.
 
 ### Tier 2 — assay-specific, on top of Tier 1
 

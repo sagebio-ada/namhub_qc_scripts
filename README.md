@@ -41,6 +41,11 @@ pipelines (standard library only):
   FastQC, kraken2/Bracken contamination
 - `tools.py` — run fq lint and kraken2 + Bracken
 - `fastqc_zip.py` — median read length from a FastQC zip
+- `fq_lint.py` — run and parse `fq lint` output; also used directly by
+  `scrnaseq_qc_pipeline/fq_lint_qc.py` (the one piece of Tier 1 FASTQ QC
+  that's genuinely shared code today, not just a parallel reimplementation —
+  see [`CHECK_REUSABILITY.md`](CHECK_REUSABILITY.md) for the rest of that
+  picture)
 
 A pipeline script adds the repo root to `sys.path` and imports from
 `qc_common` (see `rnaseq_qc_pipeline/rnaseq_qc_metrics.py`). Assay-specific
@@ -50,4 +55,7 @@ code is moved into `qc_common` when a second pipeline needs it.
 Note: an unmerged branch for `scrnaseq_qc_pipeline/` independently started a
 similarly-named shared package (`common/`, holding a `fastq_layout.py`
 helper) — a naming collision worth resolving if/when these two efforts
-converge.
+converge. (A second, unrelated `qc_common` collision — a same-named
+single-file module in `scrnaseq_qc_pipeline/` used for its py-dcqc exit-code
+contract — has already been resolved by renaming that file to
+`scrnaseq_common.py`.)
