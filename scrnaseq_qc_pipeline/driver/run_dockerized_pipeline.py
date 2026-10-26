@@ -111,6 +111,7 @@ def read_json(path: Path) -> dict:
 def docker_run_external(
     check_name: str, task_dir: Path, input_files: Dict[str, Path],
     extra_args: Optional[List[str]] = None, extra_mounts: Optional[Dict[str, str]] = None,
+    positional: Optional[List[str]] = None,
 ) -> "tuple[int, dict, str]":
     """Invoke an external/ check exactly the way nf-dcqc's RUN_PROCESS does
     (modules/local/run_process.nf in Sage-Bionetworks-Workflows/nf-dcqc): a
@@ -119,20 +120,26 @@ def docker_run_external(
     the current host user with that directory as the container's working
     directory, judged only by the exit code and the two captured streams.
 
+    Every key of input_files is symlinked into the task directory. `positional`
+    controls which of those bare filenames are appended to the command as
+    positional arguments (default: all of them, in input_files' order) --
+    pass an explicit subset when a file is only referenced via a flag already
+    present in extra_args (e.g. fastq_aggregate's --ena-metadata-json names a
+    staged file without it also being a bare positional argument).
+
     Returns (exit_code, metrics_dict_or_empty, reason_text). metrics is {}
     if stdout wasn't valid JSON (py-dcqc would call that an error regardless
     of the exit code; this driver just reports an empty metrics dict and
     lets the caller's own exit-code handling decide the status).
     """
     task_dir.mkdir(parents=True, exist_ok=True)
-    arg_names = []
     for fname, src in input_files.items():
         link = task_dir / fname
         if link.exists() or link.is_symlink():
             link.unlink()
         link.symlink_to(src.resolve())
-        arg_names.append(fname)
 
+    arg_names = positional if positional is not None else list(input_files.keys())
     quoted_names = " ".join(f"'{n}'" for n in arg_names)
     inner_command = " ".join(["python3", "/app/run.py", *(extra_args or []), quoted_names]).strip()
     task_abs = str(task_dir.resolve())
@@ -257,6 +264,34 @@ def run_matrix_content_external(
     return findings
 
 
+def run_fastq_aggregate_external(
+    work_dir: Path, entity_id: str, sample_name: str, ena_metadata_path: Path, summary_paths: List[Path],
+    any_capped: bool,
+) -> List[Finding]:
+    task_dir = work_dir / "_tasks" / f"fastq_aggregate_{entity_id}"
+    input_files = {ena_metadata_path.name: ena_metadata_path}
+    for p in summary_paths:
+        input_files[p.name] = p
+    extra_args = ["--ena-metadata-json", ena_metadata_path.name]
+    if any_capped:
+        extra_args.append("--any-capped")
+
+    exit_code, metrics, reason = docker_run_external(
+        "fastq_aggregate", task_dir, input_files, extra_args=extra_args,
+        positional=[p.name for p in summary_paths],
+    )
+
+    if exit_code != 0:
+        return [make_finding(entity_id, sample_name, "fastq_aggregate", "FAIL",
+                              reason or "Could not compute aggregate checks")]
+
+    findings = []
+    for check in ("read_count_vs_ena", "paired_fastq_parity", "mean_length_vs_registry"):
+        if check in metrics:
+            findings.append(make_finding(entity_id, sample_name, check, "INFO", metrics[check]))
+    return findings
+
+
 # --- Per-tier orchestration (mirrors run_scrnaseq_qc.py's main()) ---------
 
 
@@ -356,17 +391,10 @@ def run_fastq_sra(work_dir: Path, entity_id: str, info: dict, expected_species: 
             fastq_path.unlink(missing_ok=True)
 
     if summary_rels:
-        agg_args = [
-            "--entity-id", entity_id, "--sample-name", info["name"],
-            "--ena-metadata-json", f"/data/{ena_meta_rel}",
-            "--output", f"/data/findings/fastq_aggregate_{entity_id}.json",
-        ]
-        for rel in summary_rels:
-            agg_args += ["--fastqc-summary", f"/data/{rel}"]
-        if any_capped:
-            agg_args.append("--any-capped")
-        docker_run("fastq_aggregate", agg_args, work_dir)
-        findings.extend(read_findings(work_dir, f"findings/fastq_aggregate_{entity_id}.json"))
+        findings.extend(run_fastq_aggregate_external(
+            work_dir, entity_id, info["name"], ena_meta_path,
+            [work_dir / rel for rel in summary_rels], any_capped,
+        ))
 
     return findings
 

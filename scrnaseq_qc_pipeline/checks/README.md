@@ -25,7 +25,20 @@ stdout, a short reason on stderr. See `qc_common.py`'s `DCQC_PASS`/
 `DCQC_FAIL`/`DCQC_ERROR`/`emit_dcqc_metrics`/`emit_dcqc_reason`, and each
 check's own `run.py` docstring for its specific exit-code mapping.
 
-Current members: `fq_lint`, `fastqc`, `kraken2_qc`, `matrix_content_qc`.
+Current members: `fq_lint`, `fastqc`, `kraken2_qc`, `matrix_content_qc`,
+`fastq_aggregate`, `multiqc`.
+
+The last two don't wrap a tool-on-one-file the way the first four do, but
+they still satisfy every bullet above, with a documented deviation each
+(see their own `run.py`/`Dockerfile` docstrings for the specifics):
+- **`fastq_aggregate`** is pure computation over already-staged JSON
+  summaries — no network, no credentials — but takes a variable number of
+  input files, beyond py-dcqc's tested SingleTarget/PairedTarget cardinality.
+- **`multiqc`** wraps the `multiqc` binary on files already staged, but
+  scans an arbitrary-N-file directory rather than one file/pair, and writes
+  its own report into the working directory rather than confining itself to
+  the three reserved output files — the report is this check's entire
+  purpose, unlike a validator whose only job is a verdict.
 
 ## `internal/` — everything else that still needs to run as its own script
 
@@ -60,7 +73,7 @@ place. The plan is to run these via this repo's **own** Nextflow pipeline
 
 Current members: `matrix_download`, `synapse_fastq_download`,
 `fastq_download`, `fastq_resolution`, `geo_metadata_fetch`,
-`geo_annotation_check`, `fastq_aggregate`, `multiqc`.
+`geo_annotation_check`.
 
 ## A note on `fastq_download`
 
@@ -68,5 +81,17 @@ This one is a hybrid: it does its own HTTPS fetch (why it's `internal/`,
 not `external/`) *and* a size/md5 comparison against ENA's registry once
 the file is local. The comparison half alone — given an already-staged file
 plus the registered size/md5 as plain scalars, no network — would qualify
-as a legitimate 5th external test. It hasn't been split out; this is a
+as a legitimate 6th external test. It hasn't been split out; this is a
 natural follow-up if tighter py-dcqc alignment is wanted later.
+
+## An open question: `geo_annotation_check`
+
+By the same reasoning that moved `fastq_aggregate` here-to-external
+(pure computation over already-staged JSON, no network/credentials at
+runtime), `geo_annotation_check` arguably qualifies too — it only compares
+two already-fetched JSON dicts (`annotations.json`, `geo_metadata.json`);
+the network call that produced them already happened in the separate
+`geo_metadata_fetch` step. It's kept in `internal/` for now since this
+hasn't been explicitly decided either way — revisit it together with
+`fastq_download`'s split if/when this repo tightens py-dcqc alignment
+further.
