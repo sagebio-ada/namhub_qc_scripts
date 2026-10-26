@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
 """Local end-to-end driver for the dockerized scRNA-seq QC checks.
 
-Chains the checks/*/{run.py, Dockerfile} containers together against one
-shared, host-mounted work directory, mirroring run_scrnaseq_qc.py's own
-control-flow branching (SRA vs. direct-upload, --geo-accession given or not,
-loop over mate files, aggregate after) -- so its scrnaseq_qc_report.csv can
-be diffed directly against a real run_scrnaseq_qc.py run on the same sample,
-as the validation that dockerizing the checks didn't change their behavior.
+Chains the checks/{external,internal}/*/{run.py, Dockerfile} containers
+together against one shared, host-mounted work directory, mirroring
+run_scrnaseq_qc.py's own control-flow branching (SRA vs. direct-upload,
+--geo-accession given or not, loop over mate files, aggregate after) -- so
+its scrnaseq_qc_report.csv can be diffed against a real run_scrnaseq_qc.py
+run on the same sample, as a validation that dockerizing the checks didn't
+change their behavior.
+
+Two invocation styles, matching the two check categories:
+  - checks/external/*: invoked exactly the way nf-dcqc's RUN_PROCESS would
+    (see Sage-Bionetworks-Workflows/py-dcqc#96) -- a fresh task directory
+    holding only the symlinked input file(s), run as the current host user,
+    judged only by exit_code.txt/std_out.txt/std_err.txt. This driver's own
+    report is rebuilt from that raw 3-way result, since py-dcqc's one-test-
+    one-verdict model doesn't preserve this pipeline's original per-module
+    Finding granularity 1:1 -- see the adapter functions below.
+  - checks/internal/*: invoked with this repo's own --output-a-Findings-JSON
+    contract, unchanged from before this split (these were never going to
+    be real py-dcqc external tests -- see the dockerize-checks skill).
 
 This is a local testing tool, not a production orchestrator: Synapse-tree
 walking/classification (who are the raw-run/processed-sample entities) stays
@@ -14,16 +27,16 @@ un-dockerized glue, reused directly from run_scrnaseq_qc.py.
 
 Usage
 -----
-    # Build every checks/*/Dockerfile, then run:
+    # Build every checks/{external,internal}/*/Dockerfile, then run:
     python driver/run_dockerized_pipeline.py --synapse-id syn73675040 \\
         --geo-accession GSE293390 --output-dir output/docker_qc --build
 
-    # Images already built, skip fastqc's kraken2 tier:
+    # Images already built:
     python driver/run_dockerized_pipeline.py --synapse-id syn73675040 \\
         --output-dir output/docker_qc
 
 Requires Docker running locally. Images are tagged `qc-<check-name>`
-(underscores -> hyphens), e.g. checks/fastq_download -> qc-fastq-download.
+(underscores -> hyphens), e.g. checks/external/fastq_download -> qc-fastq-download.
 """
 from __future__ import annotations
 
@@ -39,7 +52,7 @@ _HERE = Path(__file__).resolve().parent
 _PIPELINE_DIR = _HERE.parent
 sys.path.insert(0, str(_PIPELINE_DIR))
 
-from qc_common import Finding, summarize, write_report_csv  # noqa: E402
+from qc_common import Finding, make_finding, summarize, write_report_csv  # noqa: E402
 import run_scrnaseq_qc as native  # noqa: E402  -- reuses un-dockerized Synapse-tree-walking glue
 
 CHECKS_DIR = _PIPELINE_DIR / "checks"
@@ -51,16 +64,20 @@ def image_tag(check_name: str) -> str:
 
 
 def build_all_images() -> None:
-    for check_dir in sorted(CHECKS_DIR.iterdir()):
-        dockerfile = check_dir / "Dockerfile"
-        if not dockerfile.exists():
-            continue
-        tag = image_tag(check_dir.name)
-        print(f"Building {tag} …")
-        subprocess.run(
-            ["docker", "build", "-f", str(dockerfile), "-t", tag, str(_PIPELINE_DIR)],
-            check=True,
-        )
+    for category in ("external", "internal"):
+        for check_dir in sorted((CHECKS_DIR / category).iterdir()):
+            dockerfile = check_dir / "Dockerfile"
+            if not dockerfile.exists():
+                continue
+            tag = image_tag(check_dir.name)
+            print(f"Building {tag} ({category}) …")
+            subprocess.run(
+                ["docker", "build", "-f", str(dockerfile), "-t", tag, str(_PIPELINE_DIR)],
+                check=True,
+            )
+
+
+# --- checks/internal/* invocation (unchanged --output-JSON contract) ------
 
 
 def docker_run(check_name: str, args: List[str], work_dir: Path,
@@ -88,8 +105,159 @@ def read_json(path: Path) -> dict:
         return json.load(fh)
 
 
-# --- Per-tier orchestration (mirrors run_scrnaseq_qc.py's main(), one docker
-# run per step instead of one in-process function call) -----------------
+# --- checks/external/* invocation (real nf-dcqc RUN_PROCESS semantics) ----
+
+
+def docker_run_external(
+    check_name: str, task_dir: Path, input_files: Dict[str, Path],
+    extra_args: Optional[List[str]] = None, extra_mounts: Optional[Dict[str, str]] = None,
+) -> "tuple[int, dict, str]":
+    """Invoke an external/ check exactly the way nf-dcqc's RUN_PROCESS does
+    (modules/local/run_process.nf in Sage-Bionetworks-Workflows/nf-dcqc): a
+    fresh task directory holding only the staged input file(s) -- symlinked
+    in by their bare filename, matching how nf-dcqc stages a file -- run as
+    the current host user with that directory as the container's working
+    directory, judged only by the exit code and the two captured streams.
+
+    Returns (exit_code, metrics_dict_or_empty, reason_text). metrics is {}
+    if stdout wasn't valid JSON (py-dcqc would call that an error regardless
+    of the exit code; this driver just reports an empty metrics dict and
+    lets the caller's own exit-code handling decide the status).
+    """
+    task_dir.mkdir(parents=True, exist_ok=True)
+    arg_names = []
+    for fname, src in input_files.items():
+        link = task_dir / fname
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(src.resolve())
+        arg_names.append(fname)
+
+    quoted_names = " ".join(f"'{n}'" for n in arg_names)
+    inner_command = " ".join(["python3", "/app/run.py", *(extra_args or []), quoted_names]).strip()
+    task_abs = str(task_dir.resolve())
+
+    cmd = [
+        "docker", "run", "--rm",
+        "-u", f"{os.getuid()}:{os.getgid()}",
+        "-v", f"{task_abs}:{task_abs}", "-w", task_abs,
+    ]
+    for host_path, container_path in (extra_mounts or {}).items():
+        cmd += ["-v", f"{host_path}:{container_path}"]
+    cmd.append(image_tag(check_name))
+    cmd += [
+        "/bin/bash", "-euo", "pipefail", "-c",
+        f'( ({inner_command}) > std_out.txt 2> std_err.txt; echo $? > exit_code.txt ) || true',
+    ]
+    subprocess.run(cmd, check=True)
+
+    exit_code = int((task_dir / "exit_code.txt").read_text().strip())
+    stdout_text = (task_dir / "std_out.txt").read_text().strip()
+    stderr_text = (task_dir / "std_err.txt").read_text().strip()
+    try:
+        metrics = json.loads(stdout_text) if stdout_text else {}
+    except json.JSONDecodeError:
+        metrics = {}
+    return exit_code, metrics, stderr_text
+
+
+def run_fq_lint_external(work_dir: Path, entity_id: str, sample_name: str, fastq_path: Path) -> List[Finding]:
+    task_dir = work_dir / "_tasks" / f"fq_lint_{entity_id}_{fastq_path.name}"
+    exit_code, _metrics, reason = docker_run_external("fq_lint", task_dir, {fastq_path.name: fastq_path})
+
+    if exit_code == 0:
+        return [make_finding(entity_id, sample_name, "fq_lint", "PASS",
+                              f"{fastq_path.name}: no structural issues found")]
+    if exit_code == 1:
+        return [make_finding(entity_id, sample_name, "fq_lint", "FAIL",
+                              reason or f"{fastq_path.name}: fq lint reported issues")]
+    # exit_code == 2 (or anything else): an operational failure, not fq's verdict.
+    return [make_finding(entity_id, sample_name, "fq_lint", "FAIL",
+                          reason or f"{fastq_path.name}: fq lint could not run")]
+
+
+def run_fastqc_external(
+    work_dir: Path, entity_id: str, sample_name: str, fastq_path: Path,
+) -> "tuple[List[Finding], Optional[dict]]":
+    task_dir = work_dir / "_tasks" / f"fastqc_{entity_id}_{fastq_path.name}"
+    exit_code, metrics, reason = docker_run_external(
+        "fastqc", task_dir, {fastq_path.name: fastq_path}, extra_args=["--summary-out", "fastqc_summary.json"],
+    )
+
+    if exit_code == 2:
+        return [make_finding(entity_id, sample_name, "fastqc", "FAIL", reason or "FastQC failed")], None
+
+    findings: List[Finding] = [make_finding(
+        entity_id, sample_name, "fastqc_basic_stats", "INFO",
+        f"{fastq_path.name}: {metrics.get('total_sequences', '?')} seqs, "
+        f"len={metrics.get('sequence_length', '?')}, GC={metrics.get('pct_gc', '?')}%",
+    )]
+    module_details = metrics.get("module_details") or {}
+    for module_name, module_status in (metrics.get("modules") or {}).items():
+        if module_status == "PASS":
+            continue
+        detail = module_details.get(module_name, f"{fastq_path.name}: {module_status.lower()}")
+        findings.append(make_finding(entity_id, sample_name, f"fastqc_module:{module_name}", module_status, detail))
+
+    summary_path = task_dir / "fastqc_summary.json"
+    summary = read_json(summary_path) if summary_path.exists() else None
+    return findings, summary
+
+
+def run_kraken2_external(
+    work_dir: Path, entity_id: str, sample_name: str, fastq_path: Path,
+    kraken2_db: str, expected_species: Optional[str], threads: int,
+) -> List[Finding]:
+    task_dir = work_dir / "_tasks" / f"kraken2_{entity_id}_{fastq_path.name}"
+    extra_args = ["--db-path", "/db", "--threads", str(threads)]
+    if expected_species:
+        extra_args += ["--expected-species", expected_species]
+    exit_code, metrics, reason = docker_run_external(
+        "kraken2_qc", task_dir, {fastq_path.name: fastq_path},
+        extra_args=extra_args, extra_mounts={kraken2_db: "/db"},
+    )
+
+    if exit_code != 0:
+        # Always an operational failure for this check -- it has no real
+        # FAIL verdict of its own (see checks/external/kraken2_qc/run.py).
+        return [make_finding(entity_id, sample_name, "kraken2", "FAIL", reason or "Kraken2 classification failed")]
+
+    findings = [
+        make_finding(entity_id, sample_name, "kraken2_unclassified", "INFO", metrics.get("unclassified", "")),
+        make_finding(entity_id, sample_name, "kraken2_top_species", "INFO", metrics.get("top_species", "")),
+    ]
+    if "species_match" in metrics:
+        findings.append(make_finding(entity_id, sample_name, "kraken2_species_match", "INFO", metrics["species_match"]))
+    return findings
+
+
+def run_matrix_content_external(
+    work_dir: Path, sample_id: str, barcodes: Path, features: Path, matrix: Path, cellranger_output_class: str,
+) -> List[Finding]:
+    task_dir = work_dir / "_tasks" / f"matrix_content_{sample_id}"
+    input_files = {barcodes.name: barcodes, features.name: features, matrix.name: matrix}
+    exit_code, metrics, reason = docker_run_external(
+        "matrix_content_qc", task_dir, input_files,
+        extra_args=["--cellranger-output-class", cellranger_output_class or ""],
+    )
+
+    if exit_code == 2:
+        return [make_finding(sample_id, sample_id, "matrix_integrity", "FAIL", reason or "Could not parse matrix")]
+
+    findings: List[Finding] = []
+    for check, key in (
+        ("matrix_integrity", "matrix_integrity"), ("matrix_dimensions", "matrix_dimensions"),
+        ("matrix_metrics", "matrix_metrics"), ("empty_barcode_check", "empty_barcode_check"),
+    ):
+        if metrics.get(key):
+            status = "FAIL" if (key == "matrix_metrics" and exit_code == 1) else "INFO"
+            findings.append(make_finding(sample_id, sample_id, check, status, metrics[key]))
+    if metrics.get("mito_fraction"):
+        findings.append(make_finding(sample_id, sample_id, "mito_fraction", "INFO", metrics["mito_fraction"]))
+    return findings
+
+
+# --- Per-tier orchestration (mirrors run_scrnaseq_qc.py's main()) ---------
 
 
 def run_geo_tier(work_dir: Path, geo_accession: str, raw_runs: Dict[str, dict]) -> "tuple[List[Finding], dict]":
@@ -167,35 +335,21 @@ def run_fastq_sra(work_dir: Path, entity_id: str, info: dict, expected_species: 
         was_capped = bool(max_bytes) and fastq_path.stat().st_size >= max_bytes
         any_capped = any_capped or was_capped
 
-        docker_run("fq_lint", [
-            "--entity-id", entity_id, "--sample-name", info["name"],
-            "--fastq-path", f"/data/{dest_rel}",
-            "--output", f"/data/findings/fq_lint_{entity_id}_{fname}.json",
-        ], work_dir)
-        findings.extend(read_findings(work_dir, f"findings/fq_lint_{entity_id}_{fname}.json"))
+        findings.extend(run_fq_lint_external(work_dir, entity_id, info["name"], fastq_path))
 
         if kraken2_db:
-            kraken2_args = [
-                "--entity-id", entity_id, "--sample-name", info["name"],
-                "--fastq-path", f"/data/{dest_rel}", "--db-path", "/db",
-                "--outdir", f"/data/{sample_dir}/kraken2",
-                "--output", f"/data/findings/kraken2_{entity_id}_{fname}.json",
-            ]
-            if expected_species:
-                kraken2_args += ["--expected-species", expected_species]
-            docker_run("kraken2_qc", kraken2_args, work_dir, extra_mounts={kraken2_db: "/db"})
-            findings.extend(read_findings(work_dir, f"findings/kraken2_{entity_id}_{fname}.json"))
+            findings.extend(run_kraken2_external(
+                work_dir, entity_id, info["name"], fastq_path, kraken2_db, expected_species, threads=4,
+            ))
 
-        summary_rel = f"{sample_dir}/fastqc/{fname}.summary.json"
-        docker_run("fastqc", [
-            "--entity-id", entity_id, "--sample-name", info["name"],
-            "--fastq-path", f"/data/{dest_rel}", "--outdir", f"/data/{sample_dir}/fastqc",
-            "--label", fname,
-            "--output", f"/data/findings/fastqc_{entity_id}_{fname}.json",
-            "--summary-out", f"/data/{summary_rel}",
-        ], work_dir)
-        findings.extend(read_findings(work_dir, f"findings/fastqc_{entity_id}_{fname}.json"))
-        if (work_dir / summary_rel).exists():
+        fastqc_findings, summary = run_fastqc_external(work_dir, entity_id, info["name"], fastq_path)
+        findings.extend(fastqc_findings)
+        if summary is not None:
+            summary_rel = f"{sample_dir}/fastqc/{fname}.summary.json"
+            summary_path = work_dir / summary_rel
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(summary_path, "w") as fh:
+                json.dump(summary, fh, indent=2)
             summary_rels.append(summary_rel)
 
         if not keep_files:
@@ -237,33 +391,16 @@ def run_fastq_direct(work_dir: Path, entity_id: str, info: dict, expected_specie
     if not candidates:
         return findings
     fastq_path = candidates[0]
-    dest_rel = f"{sample_dir}/{fastq_path.name}"
 
-    docker_run("fq_lint", [
-        "--entity-id", entity_id, "--sample-name", info["name"],
-        "--fastq-path", f"/data/{dest_rel}",
-        "--output", f"/data/findings/fq_lint_{entity_id}.json",
-    ], work_dir)
-    findings.extend(read_findings(work_dir, f"findings/fq_lint_{entity_id}.json"))
+    findings.extend(run_fq_lint_external(work_dir, entity_id, info["name"], fastq_path))
 
     if kraken2_db:
-        kraken2_args = [
-            "--entity-id", entity_id, "--sample-name", info["name"],
-            "--fastq-path", f"/data/{dest_rel}", "--db-path", "/db",
-            "--outdir", f"/data/{sample_dir}/kraken2",
-            "--output", f"/data/findings/kraken2_{entity_id}.json",
-        ]
-        if expected_species:
-            kraken2_args += ["--expected-species", expected_species]
-        docker_run("kraken2_qc", kraken2_args, work_dir, extra_mounts={kraken2_db: "/db"})
-        findings.extend(read_findings(work_dir, f"findings/kraken2_{entity_id}.json"))
+        findings.extend(run_kraken2_external(
+            work_dir, entity_id, info["name"], fastq_path, kraken2_db, expected_species, threads=4,
+        ))
 
-    docker_run("fastqc", [
-        "--entity-id", entity_id, "--sample-name", info["name"],
-        "--fastq-path", f"/data/{dest_rel}", "--outdir", f"/data/{sample_dir}/fastqc",
-        "--output", f"/data/findings/fastqc_{entity_id}.json",
-    ], work_dir)
-    findings.extend(read_findings(work_dir, f"findings/fastqc_{entity_id}.json"))
+    fastqc_findings, _summary = run_fastqc_external(work_dir, entity_id, info["name"], fastq_path)
+    findings.extend(fastqc_findings)
 
     if not keep_files:
         fastq_path.unlink(missing_ok=True)
@@ -294,15 +431,7 @@ def run_matrix(work_dir: Path, sample_id: str, files: Dict[str, str], cellranger
     if not (barcodes and features and matrix):
         return findings
 
-    docker_run("matrix_content_qc", [
-        "--sample-id", sample_id,
-        "--barcodes-path", f"/data/{sample_dir}/{barcodes.name}",
-        "--features-path", f"/data/{sample_dir}/{features.name}",
-        "--matrix-path", f"/data/{sample_dir}/{matrix.name}",
-        "--cellranger-output-class", cellranger_output_class or "",
-        "--output", f"/data/findings/matrix_content_{sample_id}.json",
-    ], work_dir)
-    findings.extend(read_findings(work_dir, f"findings/matrix_content_{sample_id}.json"))
+    findings.extend(run_matrix_content_external(work_dir, sample_id, barcodes, features, matrix, cellranger_output_class))
     return findings
 
 
@@ -317,7 +446,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--keep-files", action="store_true")
     p.add_argument("--skip-fastqc", action="store_true")
     p.add_argument("--skip-matrix", action="store_true")
-    p.add_argument("--build", action="store_true", help="Build every checks/*/Dockerfile before running")
+    p.add_argument("--build", action="store_true", help="Build every checks/{external,internal}/*/Dockerfile before running")
     return p.parse_args(argv)
 
 

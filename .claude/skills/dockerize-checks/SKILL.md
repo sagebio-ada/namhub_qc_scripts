@@ -40,9 +40,9 @@ verdict/fact). For each one, note:
 This step is pure reading — don't refactor yet. The goal is a table like:
 `check name | tool dep | python deps | input source | entangled with`.
 
-## 2. Decide fusion vs. split boundaries
+## 2. Decide fusion vs. split boundaries, and which units are real external tests
 
-This is the one real judgment call, and it's a rule, not a case-by-case guess:
+Fusion/split is a rule, not a case-by-case guess:
 
 - **Fuse** checks that share *expensive-to-reproduce* state: the same
   downloaded file, the same subprocess invocation, an in-memory object with no
@@ -55,8 +55,32 @@ This is the one real judgment call, and it's a rule, not a case-by-case guess:
   re-parsing a small file, redoing a cheap numeric pass), prefer splitting for
   clarity over fusing just to avoid the redundant recompute.
 
-Write down the resulting list of units before touching code — it's the
-scaffold for steps 3-4.
+Then classify each resulting unit — this determines which contract it gets in
+step 4, and it is **not** simply "wraps a tool" vs. "doesn't." Following
+py-dcqc's own real distinction (Sage-Bionetworks-Workflows/py-dcqc#96,
+"Internal and External Tests"): the question is *where the business logic
+runs*, not what it depends on.
+
+- **A genuine external-test candidate** needs nothing but the file(s) already
+  on disk — no network call, no credentials, at runtime — regardless of
+  whether it wraps a tool or is pure computation. These get the strict
+  py-dcqc contract in step 4.
+- **Everything else that still needs its own script/process** — a network
+  API call, a Synapse/URL download, pure Python logic with no tool
+  dependency — is *not* a py-dcqc internal test just because it has no tool
+  dependency. Real py-dcqc internal tests have no separate script at all:
+  the code is contributed directly into py-dcqc's own package and called
+  in-process. A standalone script of ours that was never contributed
+  upstream doesn't fit py-dcqc's internal category either — it's simply
+  outside py-dcqc's two real categories, run by this repo's own tooling
+  instead. See `scrnaseq_qc_pipeline/checks/README.md` for the fuller
+  version of this distinction and why `matrix_download`-style
+  Synapse-staging checks don't become py-dcqc tests of either kind (py-dcqc
+  does file staging itself, before any test runs — there's no test to
+  write for it).
+
+Write down the resulting list of units, each tagged external or not, before
+touching code — it's the scaffold for steps 3-4.
 
 ## 3. Refactor the source module in place
 
@@ -76,52 +100,73 @@ real operational failure (an exception, not a data-quality opinion).
 Verify the refactor didn't change behavior before moving on — run the
 before/after versions against the same fixture input and diff their output.
 
-## 4. Wrap each resulting unit in `checks/<name>/{run.py, Dockerfile}`
+## 4. Wrap each resulting unit in `checks/{external,internal}/<name>/{run.py, Dockerfile}`
 
-Directory layout, one pair per check, sitting alongside the script's home
-directory:
+Directory layout, one pair per check, sorted into the category decided in
+step 2:
 
 ```
 <pipeline_dir>/
   <existing modules, refactored per step 3 — unchanged otherwise>
   checks/
-    <check_name>/
-      run.py
-      Dockerfile
+    README.md        # the external/internal distinction, written out in full
+    external/
+      <check_name>/{run.py, Dockerfile}
+    internal/
+      <check_name>/{run.py, Dockerfile}
 ```
 
-**`run.py`** — a thin argparse CLI:
-- Imports the real function from its canonical module (never reimplements
-  logic inline).
-- Common flags: an identifying flag or two (whatever the target script uses to
-  key its findings — an entity/sample id), `--output PATH` (required).
-- Writes results as a **JSON array to `--output`**, never to stdout — stdout
-  stays free for the wrapped tool's own subprocess logs. In this repo, use
-  `qc_common.write_findings_json(findings, Path(args.output))`.
-- Any additional artifact a check must hand off to a later step (see step 5)
-  gets its own explicit flag (e.g. `--ena-metadata-out`).
+### `external/` — the real py-dcqc `ExternalBaseTest` contract
 
-**`Dockerfile`**:
-- Build context is the pipeline's home directory (e.g.
-  `docker build -f checks/<name>/Dockerfile -t qc-<name> scrnaseq_qc_pipeline/`).
-- `COPY` only the module(s) this check actually needs, plus the shared
-  schema/common module — vendor it via `COPY`, not a separately published
-  package, unless that shared module is large enough to justify one. This is
-  what keeps one source of truth: editing the canonical module once updates
-  both the in-process pipeline and every container that `COPY`s it on next
-  build.
+Follow Sage-Bionetworks-Workflows/py-dcqc#96 exactly — it is the canonical
+spec, written by py-dcqc's own maintainers for exactly this purpose:
+
+- **`run.py`** takes the file(s) as **bare filenames, positional, relative to
+  the working directory** (nf-dcqc stages each file there as a symlink) —
+  never a flag, never a directory prefix. Writes **one JSON object of
+  metrics to stdout** (`qc_common.emit_dcqc_metrics`) and, on a non-pass
+  result, a short reason to **stderr** (`qc_common.emit_dcqc_reason`).
+  Nothing else goes to stdout — any other text makes the JSON invalid.
+- **Exit code is 3-way**, not 2-way (`qc_common.DCQC_PASS`/`DCQC_FAIL`/
+  `DCQC_ERROR` = 0/1/2): `0` the file passed; `1` a genuine tool-native
+  bad-file verdict; `2` the check itself couldn't run (crash, missing
+  binary) — not a verdict about the data. If the check has no validated
+  tool-native verdict at all (most of this pipeline's checks don't — see
+  the INFO-only philosophy in step 3), it only ever resolves to `0` or `2`;
+  say so explicitly in the docstring rather than leaving `1` a mystery.
+- **`Dockerfile` has no `ENTRYPOINT`/`CMD`** — nf-dcqc supplies the full
+  command every time. Needs `bash` and `procps` (`apt-get install procps`
+  on Debian-based images — Nextflow uses `ps` for task metrics). Set
+  `ENV HOME=/tmp` and `ENV PYTHONDONTWRITEBYTECODE=1` (the container runs as
+  an arbitrary non-root UID with no home directory). `chmod 0755` the copied
+  `run.py`. Comment the Dockerfile with the exact `docker run` invocation
+  that tests it the way nf-dcqc would (see any `checks/external/*/Dockerfile`
+  in this repo for the template) — this is also how you manually verify the
+  image before anything automated does.
+- If a check needs an artifact from an earlier step (step 5) for something
+  beyond the strict py-dcqc contract — this repo's own aggregate checks
+  need each mate file's FastQC summary, which py-dcqc has no mechanism for
+  passing between independent tests — add an explicit opt-in flag for it
+  (e.g. `--summary-out`) and say in the docstring that it's an extension a
+  literal py-dcqc submission would drop.
 - **Base image**: prefer an existing community image
   (`quay.io/biocontainers/<tool>`, `ghcr.io/...`) for any check wrapping an
-  external bioinformatics/CLI tool — check quay.io/biocontainers first. Use a
-  minimal custom image (e.g. `python:3.11-slim` + pip installs) only for
-  pure-language logic, or a tool with no existing community image.
+  external bioinformatics/CLI tool. Use a minimal custom image (e.g.
+  `python:3.14-slim` + pip installs) only for pure-language logic, or a tool
+  with no existing community image.
 
-**Exit codes**: `0` whenever the script wrote valid output — including a
-`FAIL` finding, since that's the check correctly doing its job. Non-zero only
-when `run.py`'s own control flow crashes before producing output (a bug in
-the wrapper itself, not a check that correctly reported a problem). This is
-what lets an orchestrator (a local driver, or later a workflow engine)
-distinguish "ran fine and found something wrong" from "the check is broken."
+### `internal/` — our own scripts, our own contract
+
+Keep the simpler, original contract: `run.py` takes identifying flags (an
+entity/sample id) and `--output PATH`, writes a **JSON array of Findings**
+to it (`qc_common.write_findings_json`), exits `0` whenever it produced
+valid output (including a FAIL finding — that's the check doing its job)
+and non-zero only if the wrapper's own control flow crashed. `Dockerfile`
+keeps its `ENTRYPOINT` — these were never going to be judged by `dcqc
+compute-test`, so there's no reason to drop the convenience. Do not try to
+force these into the external contract just for consistency; see
+`scrnaseq_qc_pipeline/checks/README.md` for exactly which checks belong here
+and why.
 
 ## 5. Define the artifact-passing contract
 
@@ -144,7 +189,29 @@ One script (plain language script calling into each container via its normal
 process-invocation mechanism — e.g. `subprocess.run(["docker", "run", ...])`
 in Python) that chains the new per-check containers together against one
 shared mounted work directory, for the team's own local validation — not a
-production orchestrator.
+production orchestrator. Two invocation styles, matching step 4's two
+contracts:
+
+- **`internal/` checks**: unchanged — one shared mount, pass `--output`,
+  read the Findings JSON back from the host.
+- **`external/` checks**: invoke them exactly the way nf-dcqc's
+  `RUN_PROCESS` would (`modules/local/run_process.nf` in
+  Sage-Bionetworks-Workflows/nf-dcqc) — a fresh task directory per
+  invocation holding only the input file(s) symlinked in by their bare
+  filename, the container run as the current host user (`-u
+  "$(id -u):$(id -g)"`) with that directory as both the mount point and the
+  working directory, and the result read back from the three files the
+  wrapping bash produces (`std_out.txt`/`std_err.txt`/`exit_code.txt`) —
+  never from a `--output` flag, since these containers don't have one. Write
+  one small adapter function per external check that maps its 3-way exit
+  code + stdout JSON back into this repo's own Finding shape for the
+  driver's combined report; py-dcqc's one-test-one-verdict model doesn't
+  preserve the original per-check Finding granularity 1:1 (e.g. a
+  multi-module tool like FastQC collapses to one exit code), so don't expect
+  a perfect byte-for-byte match against the pre-split script's output here —
+  only that the real verdicts and numbers agree.
+
+Other driver rules, for both styles:
 
 - Mirror the original (pre-split) script's own control-flow branching, so its
   output can be diffed against that script's output as the validation step.
@@ -152,7 +219,7 @@ production orchestrator.
   whenever the pipeline has data-dependent branching or a fan-out that isn't
   known until an earlier step runs (e.g. "loop once per file discovered by
   step 1") — compose's static service graph fights that kind of pipeline.
-- After each container invocation, read that step's output JSON back on the
+- After each container invocation, read that step's output back on the
   host to decide the next step's arguments — never inside a container.
 - If the original script produces a combined report (a CSV, a summary), the
   driver should produce the same shape from the concatenated per-step results,
@@ -162,8 +229,9 @@ production orchestrator.
 
 `scrnaseq_qc_pipeline/` in this repo applies every step above:
 `fastq_qc.py` and `matrix_qc.py` hold the refactored composable functions
-(step 3), `scrnaseq_qc_pipeline/checks/*/` holds the per-check
-`run.py`/`Dockerfile` pairs (step 4), and
-`scrnaseq_qc_pipeline/driver/run_dockerized_pipeline.py` is the local
-end-to-end driver (step 6). Read those as a concrete reference when applying
-this procedure to a new script.
+(step 3), `scrnaseq_qc_pipeline/checks/{external,internal}/*/` holds the
+per-check `run.py`/`Dockerfile` pairs (step 4, with
+`scrnaseq_qc_pipeline/checks/README.md` writing out the external/internal
+distinction in full), and `scrnaseq_qc_pipeline/driver/run_dockerized_pipeline.py`
+is the local end-to-end driver (step 6, with both invocation styles). Read
+those as a concrete reference when applying this procedure to a new script.
