@@ -19,6 +19,9 @@ usage, and a full breakdown of what it checks.
   per sample) for nf-core/rnaseq output.
 - [`atacseq_qc_pipeline/`](atacseq_qc_pipeline/README.md) — QC for nf-core/atacseq
   output (combined metrics table, ENCODE-style metrics, IDR concordance).
+- [`multiome_qc_pipeline/`](multiome_qc_pipeline/README.md) — **planned, no
+  code yet.** Reference documentation of CCHMC/MiraldiLab's real per-cell-barcode
+  QC pipeline for joint snRNA+snATAC (10x Multiome/Cell Ranger ARC) data.
 
 ## Shared code
 
