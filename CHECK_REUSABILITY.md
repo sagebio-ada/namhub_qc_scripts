@@ -106,6 +106,53 @@ So: **Tier 1 exists twice, in two different styles, for three of four
 assays; Tier 2 exists once per assay in whichever style that assay's
 pipeline uses; WGS has nothing yet.**
 
+### Tier 2, per check — `atacseq_qc_pipeline`/`rnaseq_qc_pipeline` (PR #5)
+
+The same two-question analysis as the Tier 1 table above (reuse across
+assays; fit with py-dcqc's contract), applied to the individual checks these
+two pipelines actually implement — the rows the Tier 2 summary table above
+collapses into one cell per assay. Checks already covered by the Tier 1
+table (`fq_lint`, `fastqc`, contamination, read length) are not repeated
+here even though both pipelines use them.
+
+| Check | Lives in py-dcqc? | ATAC-seq | WGS | scRNA-seq | Bulk RNA-seq | Why |
+|---|---|---|---|---|---|---|
+| Strandedness (Salmon vs. RSeQC vs. declared) | ✗ | ✗ | ✗ | ~ | ✓ | Validates that a kit-dependent library-prep property (strand orientation) matches what was declared — ATAC/WGS have no such property; 10x scRNA kits use one fixed, already-known protocol, so there's nothing to infer and cross-check |
+| Salmon fragment length | ✗ | ✗ | ✗ | ~ | ✓ | Salmon-quantification-specific; scRNA-seq is almost never quantified with Salmon/alevin in this repo's pipelines, it's CellRanger's own counting |
+| STAR alignment (unique/multi/unmapped %) | ✗ | ~ | ~ | ~ | ✓ | The *concept* (mapped-read breakdown) is universal, but as built it's a parser for STAR's specific `Log.final.out` format; ATAC/WGS use different aligners (bwa) with different log formats, and CellRanger (which uses STAR internally) reports its own summary differently |
+| Qualimap (exonic/intronic/intergenic %) | ✗ | ✗ | ✗ | ~ | ✓ | Needs a transcript/gene model to classify reads against; ATAC/WGS have no such framing. scRNA-seq could in principle run this on CellRanger's BAM, but exonic/intronic splitting is already handled differently there (intronic-inclusive counting modes) |
+| featureCounts (assigned/no-feature/ambiguous/multimapping) | ✗ | ✗ | ✗ | ✗ | ✓ | Gene-level read assignment on pooled reads; scRNA-seq needs UMI-aware, per-cell-barcode counting (CellRanger/STARsolo's own job), not this bulk-style counter; ATAC/WGS have no expression-counting concept at all |
+| rRNA % (biotype-based) | ✗ | ✗ | ✗ | ✓ | ✓ | rRNA-depletion efficiency is just as meaningful a QC signal for single-cell RNA-seq libraries as for bulk; ATAC/WGS profile DNA, not RNA, so there's no rRNA biotype to measure |
+| Picard MarkDuplicates (dup rate, library size) | ✗ | ✓ | ✓ | ~ | ✓ | Generic BAM-level duplicate-rate QC, standard for any aligned DNA/RNA library; CellRanger's UMI-based dedup already resolves PCR duplicates before Picard would see the BAM, so flagging "duplicates" again there would double-count expected UMI collisions as a defect |
+| Replicate concordance — Spearman on TPM | ✗ | ✗ | ✗ | ✗ | ✓ | TPM-correlation between replicates is specific to transcript/gene-level quantification; ATAC-seq already has its own ENCODE-correct replicate check for this (IDR on peaks, below) rather than a TPM analog; WGS has no expression values; scRNA-seq replicate concordance isn't assessed this way here |
+| Alignment rate (raw / non-MT) [ENCODE] | ✗ | ✓ | ✓ | ~ | ~ | Mapped-fraction-from-a-BAM is a universal concept and standard WGS QC too; scRNA-seq's CellRanger already reports its own barcode-aware alignment rate, so re-deriving it from the pooled BAM the way this script does would lose that framing; bulk RNA-seq already gets the same information from STAR's own log, making this a redundant third measurement rather than something missing |
+| Library complexity (NRF/PBC1/PBC2) [ENCODE] | ✗ | ✓ | ~ | ✗ | ✗ | ENCODE defines NRF/PBC specifically for DNA-based assays like ChIP/ATAC; WGS QC conventionally reports Picard's duplication rate instead (same underlying concern, different convention); RNA-seq (bulk or single-cell) is deliberately non-uniform — highly expressed transcripts are expected to produce many identical fragments, so a "low NRF" there is biology, not a library defect |
+| Fragment size / nucleosome periodicity (NFR/mono) [ENCODE] | ✗ | ✓ | ✗ | ✗ | ✗ | This is specifically the signal that distinguishes ATAC-seq (periodicity from DNA wrapped around nucleosomes); none of the other three assays' fragment-length distributions carry that signal |
+| Peak enrichment (FRiP, ataqv TSS enrichment, HQAA-overlap %) | ✗ | ✓ | ✗ | ✗ | ✗ | All three require a called-peak concept (MACS2); none of WGS, scRNA-seq or bulk RNA-seq call peaks |
+| IDR replicate concordance | ✗ | ✓ | ✗ | ✗ | ✗ | Same peak-calling dependency as above, plus needs ≥2 replicate samples to compare against each other — the clearest case in this whole table of something py-dcqc's single-file, single-`FileType` `Suite` model structurally cannot express, regardless of the verdict question (see below) |
+
+**py-dcqc fit: 0/14.** Every check here is either (a) a reported-only metric
+with no tool-native pass/fail — consistent with this repo's own "no
+self-asserted verdicts" rule, but a mismatch for py-dcqc's exit-code-based
+`ExternalBaseTest` contract regardless of which way that rule gets applied —
+or (b) inherently cross-file (joins a run row to a library row, compares
+replicate samples to each other, needs a samplesheet's declared value to
+check against) rather than a single-file structural test, which is the one
+shape py-dcqc's `FileType`/`Suite` resolution can express at all (see
+**"Can py-dcqc express…"** below). The one near-exception is
+`idr_reproducibility`, which *is* a genuine tool-native verdict
+(pass/borderline/fail, ENCODE's own thresholds) — but IDR is also the most
+clearly cross-sample check in the table (it doesn't exist without ≥2
+replicates to compare), so it fails on structural grounds even though it
+would otherwise pass the verdict test that ruled out everything else.
+
+This is a different conclusion from the Tier 1 table above: there, 6 of 12
+checks fit py-dcqc because they're genuinely single-file structural tests on
+a raw FASTQ. Here, zero of 14 fit, because every one of these checks exists
+specifically *because* it needs more context than one file — an aligned BAM
+plus a samplesheet's declared value, or one replicate's peaks plus another's.
+That's not a gap to close; it's what Tier 2 checks are for.
+
 ## Can py-dcqc express "universal vs. assay-specific" today?
 
 No — checked directly against py-dcqc's current source
