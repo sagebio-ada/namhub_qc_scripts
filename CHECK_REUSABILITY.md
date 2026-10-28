@@ -153,6 +153,22 @@ specifically *because* it needs more context than one file — an aligned BAM
 plus a samplesheet's declared value, or one replicate's peaks plus another's.
 That's not a gap to close; it's what Tier 2 checks are for.
 
+**Caveat (per team communication, 2026-10-28 — not yet reflected in
+py-dcqc's public issue/PR/branch history as of that date):** multi-file test
+support is actively being developed for py-dcqc. If/when that lands, it
+removes the structural blocker for the checks here that are cross-file for
+that reason specifically — IDR (which already has a genuine tool-native
+verdict, `idr_reproducibility`, so it's the check most directly unblocked)
+and, to a lesser extent, Spearman replicate concordance and peak enrichment
+(BAM + peaks + ataqv JSON jointly for one sample). It does **not** address
+the other reason most of this table's checks fail today: they report a
+metric with no tool-native pass/fail at all (Salmon fragment length, STAR
+alignment, Qualimap, featureCounts, rRNA %, Picard MarkDuplicates, ENCODE
+alignment rate, NRF/PBC1/PBC2, fragment-size/nucleosome periodicity) —
+multi-file support doesn't manufacture a verdict where the underlying tool
+never produced one. Revisit this table once multi-file support actually
+ships, rather than assuming it resolves the whole column.
+
 ## Can py-dcqc express "universal vs. assay-specific" today?
 
 No — checked directly against py-dcqc's current source
