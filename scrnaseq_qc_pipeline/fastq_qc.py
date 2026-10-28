@@ -28,6 +28,7 @@ import hashlib
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -35,8 +36,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import fq_lint_qc
 import kraken_qc
+from common.fastq_layout import detect_fastq_layout
 from qc_common import Finding, make_finding
 
 try:
@@ -261,6 +267,14 @@ def qc_raw_run(
     add("fastq_resolution", "INFO",
         f"{len(links)} fastq file(s) resolved from ENA for {srr_accession}: {urls}")
 
+    # 2+ resolved files already tells us this run is paired across separate
+    # mate files -- no need to open anything. A single resolved file is
+    # ambiguous (interleaved vs. single-end) until it's actually downloaded,
+    # so that case is classified once dest exists, inside the loop below.
+    if len(links) >= 2:
+        layout = detect_fastq_layout([Path(item["link"].rsplit("/", 1)[-1]) for item in links])
+        add("fastq_layout", "INFO", f"{layout.layout}: {layout.detail}")
+
     run_dir = work_dir / entity_name
     run_dir.mkdir(parents=True, exist_ok=True)
     max_bytes = int(max_download_mb * 1024 * 1024) if max_download_mb else None
@@ -318,6 +332,16 @@ def qc_raw_run(
                 actual_md5 = md5_file(dest)
                 add("fastq_md5_vs_ena", "INFO",
                     f"{fname}: md5={actual_md5} vs ENA registered md5={registered_md5}")
+
+        if len(links) == 1:
+            # Only one file was resolved -- could be truly single-end, or a
+            # single interleaved file with both mates inside it. Only
+            # inspecting the actual content can tell those apart.
+            try:
+                layout = detect_fastq_layout([dest])
+                add("fastq_layout", "INFO", f"{fname}: {layout.layout}: {layout.detail}")
+            except Exception as exc:
+                add("fastq_layout", "FAIL", f"{fname}: could not classify layout: {exc}")
 
         findings.extend(fq_lint_qc.lint_fastq(entity_id, entity_name, dest))
 
@@ -405,6 +429,12 @@ def qc_direct_fastq(syn, entity_id: str, entity_name: str,
         add("fastq_download", "FAIL", f"Could not download from Synapse: {exc}")
         return findings
     add("fastq_download", "INFO", f"Downloaded {ent.name} from Synapse")
+
+    try:
+        layout = detect_fastq_layout([Path(ent.path)])
+        add("fastq_layout", "INFO", f"{ent.name}: {layout.layout}: {layout.detail}")
+    except Exception as exc:
+        add("fastq_layout", "FAIL", f"{ent.name}: could not classify layout: {exc}")
 
     findings.extend(fq_lint_qc.lint_fastq(entity_id, entity_name, Path(ent.path)))
 
