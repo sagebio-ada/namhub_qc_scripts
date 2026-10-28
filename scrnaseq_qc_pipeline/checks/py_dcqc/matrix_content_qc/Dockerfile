@@ -19,6 +19,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends procps && \
 ENV HOME=/tmp
 ENV PYTHONDONTWRITEBYTECODE=1
 
-COPY qc_common.py matrix_qc.py /app/
+COPY scrnaseq_common.py matrix_qc.py /app/
 COPY checks/py_dcqc/matrix_content_qc/run.py /app/run.py
 RUN chmod 0755 /app/run.py

@@ -18,20 +18,37 @@
 # filesystem) so that download only happens once, not on every run. Baking
 # the database into the image is the fully-compliant alternative if this
 # ever needs to be a literal py-dcqc submission.
-FROM quay.io/biocontainers/kraken2:2.1.3--pl5321hdcf5f25_0
+#
+# Like checks/py_dcqc/fastqc/Dockerfile, this biocontainers image looks
+# Debian-based (buster) but is a conda-built "mulled" image with no package
+# manager at all -- apt-get itself is missing -- so python3 is pulled from a
+# plain debian:buster-slim stage instead (same Debian release, for ABI
+# compatibility; buster is EOL so its sources.list points at
+# archive.debian.org). --platform=linux/amd64 is pinned on both stages since
+# the final image is amd64-only. See fastqc/Dockerfile for the full
+# rationale on each copied path.
+FROM --platform=linux/amd64 debian:buster-slim AS pydeps
+RUN echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list && \
+    echo "deb http://archive.debian.org/debian-security buster/updates main" >> /etc/apt/sources.list && \
+    apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get -o Acquire::Check-Valid-Until=false install -y --no-install-recommends \
+      python3 procps && \
+    rm -rf /var/lib/apt/lists/*
+
+FROM --platform=linux/amd64 quay.io/biocontainers/kraken2:2.1.3--pl5321hdcf5f25_0
 WORKDIR /app
 
-# The biocontainers single-package image only ships kraken2's own runtime
-# deps (perl/coreutils, no python) -- it's Debian-based, so apt-get is the
-# simplest way to add python3 and procps (for Nextflow's task-metrics `ps`).
-RUN apt-get update && apt-get install -y --no-install-recommends python3 procps && \
-    rm -rf /var/lib/apt/lists/*
+COPY --from=pydeps /usr/bin /usr/bin
+COPY --from=pydeps /usr/lib /usr/lib
+COPY --from=pydeps /lib /lib
+COPY --from=pydeps /bin /bin
+COPY --from=pydeps /etc/alternatives /etc/alternatives
 
 # nf-dcqc runs the container as the user who runs the workflow, not as root,
 # and that user has no home directory in the image.
 ENV HOME=/tmp
 ENV PYTHONDONTWRITEBYTECODE=1
 
-COPY qc_common.py kraken_qc.py /app/
+COPY scrnaseq_common.py kraken_qc.py /app/
 COPY checks/py_dcqc/kraken2_qc/run.py /app/run.py
 RUN chmod 0755 /app/run.py

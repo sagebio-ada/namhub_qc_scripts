@@ -1,5 +1,8 @@
-# Build from the scrnaseq_qc_pipeline/ directory:
-#   docker build -f checks/py_dcqc/fq_lint/Dockerfile -t qc-fq-lint .
+# Build from the repo root (namhub_qc_scripts/), not scrnaseq_qc_pipeline/:
+# this check's fq_lint_qc.py imports qc_common.fq_lint, and qc_common/ lives
+# at the repo root, outside scrnaseq_qc_pipeline/ -- Docker can't COPY a path
+# from outside the build context, so the context has to be the repo root.
+#   docker build -f scrnaseq_qc_pipeline/checks/py_dcqc/fq_lint/Dockerfile -t qc-fq-lint .
 #
 # No biocontainers/quay.io image exists for stjude-rust-labs/fq, so this
 # fetches the prebuilt Linux release binary directly. Pin/verify the version
@@ -29,6 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 ENV HOME=/tmp
 ENV PYTHONDONTWRITEBYTECODE=1
 
-COPY qc_common.py fq_lint_qc.py /app/
-COPY checks/py_dcqc/fq_lint/run.py /app/run.py
+# fq_lint_qc.py imports qc_common.fq_lint, so qc_common/ is copied alongside
+# it (see fq_lint_qc.py's sys.path logic, which looks for a qc_common/
+# directory next to itself before falling back to the repo-checkout layout).
+COPY scrnaseq_qc_pipeline/scrnaseq_common.py scrnaseq_qc_pipeline/fq_lint_qc.py /app/
+COPY qc_common/ /app/qc_common/
+COPY scrnaseq_qc_pipeline/checks/py_dcqc/fq_lint/run.py /app/run.py
 RUN chmod 0755 /app/run.py

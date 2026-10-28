@@ -9,7 +9,7 @@ WORKDIR /app
 # qc_matrix_content, so it's not needed here).
 RUN pip install --no-cache-dir synapseclient numpy
 
-COPY qc_common.py matrix_qc.py /app/
+COPY scrnaseq_common.py matrix_qc.py /app/
 COPY checks/repo_scripts/matrix_download/run.py /app/run.py
 
 ENTRYPOINT ["python", "run.py"]

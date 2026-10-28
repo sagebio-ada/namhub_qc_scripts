@@ -19,7 +19,16 @@ import sys
 from pathlib import Path
 from typing import List
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# In a repo checkout this file lives at scrnaseq_qc_pipeline/fq_lint_qc.py,
+# one level below the repo root that holds qc_common/. In a Docker image
+# (see checks/*/Dockerfile) this file is flattened to /app/fq_lint_qc.py
+# alongside a /app/qc_common/ copied in beside it, so the two layouts need
+# different sys.path entries.
+_THIS_DIR = Path(__file__).resolve().parent
+if (_THIS_DIR / "qc_common").is_dir():
+    sys.path.insert(0, str(_THIS_DIR))
+else:
+    sys.path.insert(0, str(_THIS_DIR.parent))
 from qc_common.fq_lint import parse_fq_lint_output, run_fq_lint  # noqa: E402
 
 from scrnaseq_common import Finding, make_finding

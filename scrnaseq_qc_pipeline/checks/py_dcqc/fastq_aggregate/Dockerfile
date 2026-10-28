@@ -1,5 +1,8 @@
-# Build from the scrnaseq_qc_pipeline/ directory:
-#   docker build -f checks/py_dcqc/fastq_aggregate/Dockerfile -t qc-fastq-aggregate .
+# Build from the repo root (namhub_qc_scripts/), not scrnaseq_qc_pipeline/:
+# this check's fq_lint_qc.py imports qc_common.fq_lint, and qc_common/ lives
+# at the repo root, outside scrnaseq_qc_pipeline/ -- Docker can't COPY a path
+# from outside the build context, so the context has to be the repo root.
+#   docker build -f scrnaseq_qc_pipeline/checks/py_dcqc/fastq_aggregate/Dockerfile -t qc-fastq-aggregate .
 #
 # py-dcqc ExternalBaseTest image (Sage-Bionetworks-Workflows/py-dcqc#96):
 # no ENTRYPOINT/CMD -- nf-dcqc supplies the full command. Test it the same
@@ -21,7 +24,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 # fastq_qc.py imports fq_lint_qc/kraken_qc at module load time even though
 # this check only calls aggregate_fastq_checks() -- both are copied so the
-# import succeeds.
-COPY qc_common.py fastq_qc.py fq_lint_qc.py kraken_qc.py /app/
-COPY checks/py_dcqc/fastq_aggregate/run.py /app/run.py
+# import succeeds. fq_lint_qc.py in turn imports qc_common.fq_lint, so
+# qc_common/ is copied alongside it (see fq_lint_qc.py's sys.path logic,
+# which looks for a qc_common/ directory next to itself).
+COPY scrnaseq_qc_pipeline/scrnaseq_common.py scrnaseq_qc_pipeline/fastq_qc.py scrnaseq_qc_pipeline/fq_lint_qc.py scrnaseq_qc_pipeline/kraken_qc.py /app/
+COPY qc_common/ /app/qc_common/
+COPY scrnaseq_qc_pipeline/checks/py_dcqc/fastq_aggregate/run.py /app/run.py
 RUN chmod 0755 /app/run.py
