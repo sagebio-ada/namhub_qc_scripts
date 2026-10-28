@@ -57,7 +57,7 @@ import fastq_qc
 import geo_metadata_qc
 import matrix_qc
 import multiqc_qc
-from qc_common import Finding, first_value, make_finding, summarize, write_report_csv
+from scrnaseq_common import Finding, first_value, make_finding, summarize, write_report_csv
 
 try:
     import synapseclient as _synapse
