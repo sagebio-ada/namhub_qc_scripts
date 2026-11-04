@@ -29,20 +29,37 @@ module was renamed from `qc_common.py` — that name now belongs to the
 repo-root `qc_common/` package shared across the other pipelines; the two
 are unrelated and were colliding in name only.)
 
-Current members: `fq_lint`, `fastqc`, `kraken2_qc`, `matrix_content_qc`,
-`fastq_aggregate`, `multiqc`.
+Current members: `fq_lint`, `raw_read_qc`, `matrix_content_qc`.
 
-The last two don't wrap a tool-on-one-file the way the first four do, but
-they still satisfy every bullet above, with a documented deviation each
-(see their own `run.py`/`Dockerfile` docstrings for the specifics):
-- **`fastq_aggregate`** is pure computation over already-staged JSON
-  summaries — no network, no credentials — but takes a variable number of
-  input files, beyond py-dcqc's tested SingleTarget/PairedTarget cardinality.
-- **`multiqc`** wraps the `multiqc` binary on files already staged, but
-  scans an arbitrary-N-file directory rather than one file/pair, and writes
-  its own report into the working directory rather than confining itself to
-  the three reserved output files — the report is this check's entire
-  purpose, unlike a validator whose only job is a verdict.
+## Decided: `fastqc`/`kraken2_qc`/`fastq_aggregate`/`multiqc` merged into `raw_read_qc`
+
+These four used to be separate checks. andrewelamb's PR #1 review
+(2026-11-03) found that two of them could never actually work as
+independent py-dcqc tests: py-dcqc runs every `ExternalBaseTest` in its own
+isolated container with only its own target file(s) staged, so
+- **`fastq_aggregate`** (needs every mate file's FastQC summary) and
+- **`multiqc`** (scans the working directory for FastQC/Kraken2 output that
+  other tools already wrote)
+
+could never see another test's output — there was no file-passing mechanism
+between separate py-dcqc containers to begin with, so the "documented
+deviation" each carried before this wasn't just a cardinality quirk, it was
+a hard blocker. The only way to keep this functionality inside py-dcqc at
+all was to put the tools that *produce* the needed files (`fastqc`,
+`kraken2_qc`) in the same container as the ones that *consume* them. The
+same review also flagged `kraken2_qc`'s runtime database download as a
+separate py-dcqc violation ("the tool must not download data when it
+runs") — fixed in the same merge by baking Kraken2's full Standard-8 index
+into the image at build time instead.
+
+`raw_read_qc` now does what all four used to, in one container, on 1–2
+mate fastq files (a py-dcqc SingleTarget/PairedTarget): FastQC + Kraken2
+per mate, the ENA-registry aggregate comparison across mates, and a
+MultiQC report over just this run's own FastQC/Kraken2 output (not a
+cross-sample report the way `run_scrnaseq_qc.py`'s own local driver
+produces one — a DCQC test is inherently per-target, so cross-sample
+aggregation isn't reachable from inside one). See `raw_read_qc/run.py`'s
+own docstring for the full exit-code contract.
 
 ## `repo_scripts/` — our own scripts, our own contract
 

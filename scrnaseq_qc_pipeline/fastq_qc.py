@@ -28,6 +28,7 @@ import hashlib
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -114,20 +115,75 @@ def sanitize_capped_download(path: Path) -> None:
         fh.writelines(lines[:complete])
 
 
-def run_fastqc(fastq_path: Path, outdir: Path) -> Path:
+def run_fastqc(
+    fastq_path: Path, outdir: Path, timeout: int = 1800, poll_interval: float = 0.5
+) -> Path:
+    """Run FastQC and return its fastqc_data.txt path.
+
+    FastQC's JVM is known to not reliably finish cleanly after analysis
+    completes (a long-standing FastQC quirk, not specific to this image) --
+    observed hanging a container smoke test for 3+ hours on a 500-read file
+    whose own fastqc_data.txt never even got written: the hang was in
+    FastQC's own --extract post-processing step (unzipping its just-written
+    report), which only ever produced the .zip, not the extracted
+    directory. So this doesn't use --extract or wait on the subprocess at
+    all -- it polls for the .zip itself and confirms it's a complete,
+    uncorrupted archive (testzip() CRC-checks every member, so a
+    still-being-written file fails this rather than being read half-done),
+    then extracts fastqc_data.txt from it in Python. `timeout` is only a
+    backstop for a run that's genuinely still working (or truly wedged);
+    completion is always judged by the zip's own integrity, never by the
+    subprocess's exit status, so a timeout can only ever turn into a
+    FileNotFoundError FAIL, never a false PASS.
+    """
+    import zipfile
+
     outdir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["fastqc", "--extract", "-o", str(outdir), str(fastq_path)],
-        check=True, capture_output=True, text=True,
-    )
     stem = fastq_path.name
     for suf in (".fastq.gz", ".fq.gz", ".fastq", ".fq"):
         if stem.endswith(suf):
             stem = stem[: -len(suf)]
             break
+    zip_path = outdir / f"{stem}_fastqc.zip"
     data_txt = outdir / f"{stem}_fastqc" / "fastqc_data.txt"
-    if not data_txt.exists():
-        raise FileNotFoundError(f"Expected FastQC output not found: {data_txt}")
+
+    def zip_is_complete() -> bool:
+        if not zip_path.exists():
+            return False
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                return zf.testzip() is None
+        except (zipfile.BadZipFile, OSError):
+            return False  # still being written (or genuinely corrupt) -- not ready either way
+
+    log_path = outdir / f"{stem}_fastqc.log"
+    with open(log_path, "wb") as log_fh:
+        proc = subprocess.Popen(
+            ["fastqc", "-o", str(outdir), str(fastq_path)],
+            stdout=log_fh, stderr=subprocess.STDOUT,
+        )
+        start = time.monotonic()
+        while (
+            proc.poll() is None
+            and not zip_is_complete()
+            and time.monotonic() - start < timeout
+        ):
+            time.sleep(poll_interval)
+
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait()
+    elif proc.returncode != 0:
+        log_tail = log_path.read_text(errors="replace")[-2000:] if log_path.exists() else ""
+        raise RuntimeError(f"fastqc exited {proc.returncode}: {log_tail}")
+
+    if not zip_is_complete():
+        raise FileNotFoundError(f"Expected FastQC output not found or incomplete: {zip_path}")
+
+    data_txt.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as zf:
+        data_txt.write_bytes(zf.read(f"{stem}_fastqc/fastqc_data.txt"))
+
     return data_txt
 
 

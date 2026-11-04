@@ -21,34 +21,40 @@ whether each one could be reused as-is for ATAC-seq, whole-genome sequencing
 whether the check actually fits py-dcqc's own `ExternalBaseTest` contract
 (3-way exit code, JSON metrics on stdout) well enough to belong there, versus
 being this repo's own `repo_scripts/`-style check with its own
-`--output findings.json` contract. The five raw-read-level checks fit it,
-plus `matrix_content_qc` (a per-file structural test on the CellRanger matrix,
+`--output findings.json` contract. The raw-read-level checks fit it, plus
+`matrix_content_qc` (a per-file structural test on the CellRanger matrix,
 the same shape as the FASTQ-level tests just applied to a different file
 type); everything else — fetch/resolve/download and GEO cross-checks — is
 this repo's own orchestration logic, not a per-file structural test — see
 **"Can py-dcqc express…"** below for why that boundary doesn't shift even
 where a check is otherwise assay-agnostic.
 
+> **Update (2026-11-04)**: `fastqc`, `kraken2_qc`, `fastq_aggregate`, and
+> `multiqc` — four separate rows as of this table's first version — were
+> merged into one check, `raw_read_qc`, after andrewelamb's PR #1 review
+> (2026-11-03) found that `fastq_aggregate` and `multiqc` could never
+> actually run as independent py-dcqc tests: py-dcqc stages only one
+> isolated container's own target file(s) per test, so neither one could
+> ever see another test's output. See `checks/README.md` for the full
+> history. The table below reflects the merged check.
+
 | Check | Lives in py-dcqc? | ATAC-seq | WGS | scRNA-seq | Bulk RNA-seq | Why |
 |---|---|---|---|---|---|---|
 | `fq_lint` | ✓ | ✓ | ✓ | ✓ | ✓ | Pure FASTQ structural validation — doesn't know or care what the reads represent |
-| `fastqc` | ✓ | ✓ | ✓ | ✓ | ✓ | Generic read-quality tool. Only the *interpretation* notes (10x hexamer bias, Nextera vs. TruSeq adapters) would need per-assay rewriting, not the check/container itself |
-| `kraken2_qc` | ✓ | ✓ | ✓ | ✓ | ✓ | Species/contamination screening via k-mer matching — assay-blind by design |
-| `fastq_aggregate` | ✓ | ✓ | ✓ | ✓ | ✓ | Compares FastQC output to an ENA registry record — works for any SRA/ENA-sourced FASTQ regardless of assay |
-| `multiqc` | ✓ | ✓ | ✓ | ✓ | ✓ | Aggregates whatever FastQC/Kraken2 output exists — assay-blind |
+| `raw_read_qc` (FastQC + Kraken2 + ENA aggregate + MultiQC, merged) | ✓ | ✓ | ✓ | ✓ | ✓ | Generic read-quality/contamination/registry-comparison tooling, assay-blind by design. Only FastQC's *interpretation* notes (10x hexamer bias, Nextera vs. TruSeq adapters) would need per-assay rewriting, not the check/container itself |
 | `synapse_fastq_download` | ✗ | ✓ | ✓ | ✓ | ✓ | Generic Synapse file fetch, no assay-specific logic |
 | `fastq_download` | ✗ | ✓ | ✓ | ✓ | ✓ | Generic ENA URL fetch + size/md5 check |
 | `fastq_resolution` | ✗ | ✓ | ✓ | ✓ | ✓ | Generic SRA→ENA link resolution via accession |
 | `geo_metadata_fetch` | ✗ | ✓ | ~ | ✓ | ✓ | Works for any GEO-deposited series — but WGS is typically deposited to dbGaP/SRA, not GEO, so this wouldn't find a record for most WGS data |
 | `geo_annotation_check` | ✗ | ✓ | ~ | ✓ | ✓ | Same caveat — depends on `geo_metadata_fetch` actually finding a GEO record |
-| `matrix_content_qc` | ✓ | ✗ | ✗ | ✓ | ✗ | Hard-coded to CellRanger's specific 3-file sparse-matrix format (barcodes/features/matrix.mtx) — no equivalent concept in WGS or bulk RNA-seq's single-profile-per-sample output |
+| `matrix_content_qc` | ✓ | ✗ | ✗ | ✓ | ✗ | Hard-coded to CellRanger's specific 3-file sparse-matrix format (barcodes/features/matrix.mtx) — no equivalent concept in WGS or bulk RNA-seq's single-profile-per-sample output. **Open question as of 2026-11-04**: Andrew's PR #1 review also flagged this 3-file requirement as beyond py-dcqc's tested Target cardinality — the same structural issue `fastq_aggregate` had, not yet resolved the way `raw_read_qc` resolved it |
 | `matrix_download` | ✗ | ✗ | ✗ | ✓ | ✗ | Same — downloads specifically the CellRanger 3-role file set |
 
-**Totals: ATAC-seq 10/12, WGS 8/12 (+2 partial), scRNA-seq 12/12, Bulk RNA-seq 10/12. py-dcqc fit: 6/12.**
+**Totals: ATAC-seq 7/9, WGS 5/9 (+2 partial), scRNA-seq 9/9, Bulk RNA-seq 7/9. py-dcqc fit: 3/9.**
 
 ## Takeaway
 
-**10 of the 12 checks are already assay-agnostic as written** — they operate
+**7 of the 9 checks are already assay-agnostic as written** — they operate
 on raw FASTQ or generic file-fetch/metadata logic with zero scRNA-seq-specific
 assumptions baked in. Only `matrix_content_qc`/`matrix_download` are genuinely
 single-cell-specific (CellRanger's output format). `geo_metadata_fetch`/
@@ -69,10 +75,10 @@ dockerized checks, and PR #5's nf-core-summarizing `rnaseq_qc_pipeline/`/
 | Check | Already built? |
 |---|---|
 | Structural validity (`fq lint`) | ✓ **genuinely shared** — `qc_common/fq_lint.py` runs and parses `fq lint`; `scrnaseq_qc_pipeline/checks/py_dcqc/fq_lint` and `qc_common/fastq_sections.fq_lint` are both thin wrappers over it |
-| Read quality (FastQC) | ✓ both, but via different integration points, not shared code (`checks/py_dcqc/fastqc` runs FastQC itself per-file; `qc_common/fastq_sections.fastqc` reads MultiQC's already-aggregated tables from the nf-core pipeline's own upstream FastQC step) |
-| Species/contamination (Kraken2 [+ Bracken]) | ✓ both, but not equivalent — `checks/py_dcqc/kraken2_qc` runs Kraken2 alone; `qc_common/fastq_sections.contaminants` runs Kraken2 **and** Bracken, re-estimating species abundance from Bracken's corrected counts (a real accuracy improvement the scrnaseq side lacks) |
-| Aggregated report (MultiQC) | ✓ `scrnaseq_qc_pipeline/` only (`checks/py_dcqc/multiqc`) |
-| SRA→ENA resolution / ENA registry size-md5-readcount check | ✓ `scrnaseq_qc_pipeline/` only (`checks/repo_scripts/fastq_resolution`, `fastq_download`, `checks/py_dcqc/fastq_aggregate`) |
+| Read quality (FastQC) | ✓ both, but via different integration points, not shared code (`checks/py_dcqc/raw_read_qc` runs FastQC itself per-mate, alongside Kraken2/aggregate/MultiQC in the same container — see the 2026-11-04 update above; `qc_common/fastq_sections.fastqc` reads MultiQC's already-aggregated tables from the nf-core pipeline's own upstream FastQC step) |
+| Species/contamination (Kraken2 [+ Bracken]) | ✓ both, but not equivalent — `checks/py_dcqc/raw_read_qc` runs Kraken2 alone; `qc_common/fastq_sections.contaminants` runs Kraken2 **and** Bracken, re-estimating species abundance from Bracken's corrected counts (a real accuracy improvement the scrnaseq side lacks) |
+| Aggregated report (MultiQC) | ✓ `scrnaseq_qc_pipeline/` only (`checks/py_dcqc/raw_read_qc`, per-target only — see the 2026-11-04 update above for why it can't be cross-sample inside py-dcqc) |
+| SRA→ENA resolution / ENA registry size-md5-readcount check | ✓ `scrnaseq_qc_pipeline/` only (`checks/repo_scripts/fastq_resolution`, `fastq_download`, `checks/py_dcqc/raw_read_qc`) |
 | GEO metadata fetch + Synapse-annotation cross-check | ✓ `scrnaseq_qc_pipeline/` only — conditional: only applies when the series is actually GEO-deposited (true for scRNA-seq/bulk RNA-seq/ATAC-seq test datasets seen so far; **not** WGS, which is normally dbGaP/SRA) |
 
 **fq lint has been consolidated** into one shared implementation

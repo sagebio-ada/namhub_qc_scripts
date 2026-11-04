@@ -124,7 +124,7 @@ def docker_run_external(
     controls which of those bare filenames are appended to the command as
     positional arguments (default: all of them, in input_files' order) --
     pass an explicit subset when a file is only referenced via a flag already
-    present in extra_args (e.g. fastq_aggregate's --ena-metadata-json names a
+    present in extra_args (e.g. raw_read_qc's --ena-metadata-json names a
     staged file without it also being a bare positional argument).
 
     Returns (exit_code, metrics_dict_or_empty, reason_text). metrics is {}
@@ -183,58 +183,79 @@ def run_fq_lint_external(work_dir: Path, entity_id: str, sample_name: str, fastq
                           reason or f"{fastq_path.name}: fq lint could not run")]
 
 
-def run_fastqc_external(
-    work_dir: Path, entity_id: str, sample_name: str, fastq_path: Path,
-) -> "tuple[List[Finding], Optional[dict]]":
-    task_dir = work_dir / "_tasks" / f"fastqc_{entity_id}_{fastq_path.name}"
+def run_raw_read_qc_external(
+    work_dir: Path, entity_id: str, sample_name: str, fastq_paths: List[Path],
+    kraken2_db: Optional[str], expected_species: Optional[str], threads: int,
+    ena_metadata_path: Optional[Path] = None, any_capped: bool = False,
+) -> List[Finding]:
+    """Invoke the merged `raw_read_qc` check: FastQC + Kraken2 per mate, the
+    ENA-registry aggregate comparison, and MultiQC, all in one container call
+    on 1-2 mate fastq files. Replaces what used to be three separate external-
+    test invocations (fastqc, kraken2_qc, fastq_aggregate) -- see
+    checks/README.md's 2026-11-04 update for why those three couldn't stay
+    separate py-dcqc tests (fastq_aggregate/multiqc could never see another
+    test's isolated-container output).
+
+    kraken2_db, if given, mounts a host database directory at /db INSTEAD of
+    the image's own baked-in Standard-8 database (e.g. a smaller one for fast
+    local testing) -- unlike the old optional kraken2_qc call, Kraken2 always
+    runs now that its database is baked into the image rather than fetched
+    on demand.
+    """
+    task_dir = work_dir / "_tasks" / f"raw_read_qc_{entity_id}"
+    input_files: Dict[str, Path] = {p.name: p for p in fastq_paths}
+    positional = [p.name for p in fastq_paths]
+    extra_args: List[str] = ["--threads", str(threads)]
+    extra_mounts: Dict[str, str] = {}
+
+    if ena_metadata_path is not None:
+        input_files[ena_metadata_path.name] = ena_metadata_path
+        extra_args += ["--ena-metadata-json", ena_metadata_path.name]
+    if any_capped:
+        extra_args.append("--any-capped")
+    if expected_species:
+        extra_args += ["--expected-species", expected_species]
+    if kraken2_db:
+        extra_args += ["--db-path", "/db"]
+        extra_mounts[kraken2_db] = "/db"
+
     exit_code, metrics, reason = docker_run_external(
-        "fastqc", task_dir, {fastq_path.name: fastq_path}, extra_args=["--summary-out", "fastqc_summary.json"],
+        "raw_read_qc", task_dir, input_files, extra_args=extra_args,
+        extra_mounts=extra_mounts, positional=positional,
     )
 
     if exit_code == 2:
-        return [make_finding(entity_id, sample_name, "fastqc", "FAIL", reason or "FastQC failed")], None
+        return [make_finding(entity_id, sample_name, "raw_read_qc", "FAIL", reason or "raw_read_qc failed")]
 
-    findings: List[Finding] = [make_finding(
-        entity_id, sample_name, "fastqc_basic_stats", "INFO",
-        f"{fastq_path.name}: {metrics.get('total_sequences', '?')} seqs, "
-        f"len={metrics.get('sequence_length', '?')}, GC={metrics.get('pct_gc', '?')}%",
-    )]
-    module_details = metrics.get("module_details") or {}
-    for module_name, module_status in (metrics.get("modules") or {}).items():
-        if module_status == "PASS":
-            continue
-        detail = module_details.get(module_name, f"{fastq_path.name}: {module_status.lower()}")
-        findings.append(make_finding(entity_id, sample_name, f"fastqc_module:{module_name}", module_status, detail))
+    findings: List[Finding] = []
+    for mate in metrics.get("mates", []):
+        fname = mate.get("fname", "?")
+        fastqc = mate.get("fastqc") or {}
+        findings.append(make_finding(
+            entity_id, sample_name, "fastqc_basic_stats", "INFO",
+            f"{fname}: {fastqc.get('total_sequences', '?')} seqs, "
+            f"len={fastqc.get('sequence_length', '?')}, GC={fastqc.get('pct_gc', '?')}%",
+        ))
+        module_details = fastqc.get("module_details") or {}
+        for module_name, module_status in (fastqc.get("modules") or {}).items():
+            if module_status == "PASS":
+                continue
+            detail = module_details.get(module_name, f"{fname}: {module_status.lower()}")
+            findings.append(make_finding(entity_id, sample_name, f"fastqc_module:{module_name}", module_status, detail))
 
-    summary_path = task_dir / "fastqc_summary.json"
-    summary = read_json(summary_path) if summary_path.exists() else None
-    return findings, summary
+        kraken2 = mate.get("kraken2") or {}
+        if kraken2.get("unclassified") is not None:
+            findings.append(make_finding(entity_id, sample_name, "kraken2_unclassified", "INFO", kraken2["unclassified"]))
+        if kraken2.get("top_species") is not None:
+            findings.append(make_finding(entity_id, sample_name, "kraken2_top_species", "INFO", kraken2["top_species"]))
+        if kraken2.get("species_match") is not None:
+            findings.append(make_finding(entity_id, sample_name, "kraken2_species_match", "INFO", kraken2["species_match"]))
 
+    for check in ("read_count_vs_ena", "paired_fastq_parity", "mean_length_vs_registry"):
+        value = (metrics.get("aggregate") or {}).get(check)
+        if value is not None:
+            findings.append(make_finding(entity_id, sample_name, check, "INFO", value))
 
-def run_kraken2_external(
-    work_dir: Path, entity_id: str, sample_name: str, fastq_path: Path,
-    kraken2_db: str, expected_species: Optional[str], threads: int,
-) -> List[Finding]:
-    task_dir = work_dir / "_tasks" / f"kraken2_{entity_id}_{fastq_path.name}"
-    extra_args = ["--db-path", "/db", "--threads", str(threads)]
-    if expected_species:
-        extra_args += ["--expected-species", expected_species]
-    exit_code, metrics, reason = docker_run_external(
-        "kraken2_qc", task_dir, {fastq_path.name: fastq_path},
-        extra_args=extra_args, extra_mounts={kraken2_db: "/db"},
-    )
-
-    if exit_code != 0:
-        # Always an operational failure for this check -- it has no real
-        # FAIL verdict of its own (see checks/py_dcqc/kraken2_qc/run.py).
-        return [make_finding(entity_id, sample_name, "kraken2", "FAIL", reason or "Kraken2 classification failed")]
-
-    findings = [
-        make_finding(entity_id, sample_name, "kraken2_unclassified", "INFO", metrics.get("unclassified", "")),
-        make_finding(entity_id, sample_name, "kraken2_top_species", "INFO", metrics.get("top_species", "")),
-    ]
-    if "species_match" in metrics:
-        findings.append(make_finding(entity_id, sample_name, "kraken2_species_match", "INFO", metrics["species_match"]))
     return findings
 
 
@@ -261,34 +282,6 @@ def run_matrix_content_external(
             findings.append(make_finding(sample_id, sample_id, check, status, metrics[key]))
     if metrics.get("mito_fraction"):
         findings.append(make_finding(sample_id, sample_id, "mito_fraction", "INFO", metrics["mito_fraction"]))
-    return findings
-
-
-def run_fastq_aggregate_external(
-    work_dir: Path, entity_id: str, sample_name: str, ena_metadata_path: Path, summary_paths: List[Path],
-    any_capped: bool,
-) -> List[Finding]:
-    task_dir = work_dir / "_tasks" / f"fastq_aggregate_{entity_id}"
-    input_files = {ena_metadata_path.name: ena_metadata_path}
-    for p in summary_paths:
-        input_files[p.name] = p
-    extra_args = ["--ena-metadata-json", ena_metadata_path.name]
-    if any_capped:
-        extra_args.append("--any-capped")
-
-    exit_code, metrics, reason = docker_run_external(
-        "fastq_aggregate", task_dir, input_files, extra_args=extra_args,
-        positional=[p.name for p in summary_paths],
-    )
-
-    if exit_code != 0:
-        return [make_finding(entity_id, sample_name, "fastq_aggregate", "FAIL",
-                              reason or "Could not compute aggregate checks")]
-
-    findings = []
-    for check in ("read_count_vs_ena", "paired_fastq_parity", "mean_length_vs_registry"):
-        if check in metrics:
-            findings.append(make_finding(entity_id, sample_name, check, "INFO", metrics[check]))
     return findings
 
 
@@ -343,7 +336,7 @@ def run_fastq_sra(work_dir: Path, entity_id: str, info: dict, expected_species: 
 
     max_bytes = int(max_download_mb * 1024 * 1024) if max_download_mb else None
     any_capped = False
-    summary_rels: List[str] = []
+    fastq_paths: List[Path] = []
 
     for item in links:
         url = item["link"]
@@ -371,30 +364,21 @@ def run_fastq_sra(work_dir: Path, entity_id: str, info: dict, expected_species: 
         any_capped = any_capped or was_capped
 
         findings.extend(run_fq_lint_external(work_dir, entity_id, info["name"], fastq_path))
+        fastq_paths.append(fastq_path)
 
-        if kraken2_db:
-            findings.extend(run_kraken2_external(
-                work_dir, entity_id, info["name"], fastq_path, kraken2_db, expected_species, threads=4,
-            ))
-
-        fastqc_findings, summary = run_fastqc_external(work_dir, entity_id, info["name"], fastq_path)
-        findings.extend(fastqc_findings)
-        if summary is not None:
-            summary_rel = f"{sample_dir}/fastqc/{fname}.summary.json"
-            summary_path = work_dir / summary_rel
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(summary_path, "w") as fh:
-                json.dump(summary, fh, indent=2)
-            summary_rels.append(summary_rel)
-
-        if not keep_files:
-            fastq_path.unlink(missing_ok=True)
-
-    if summary_rels:
-        findings.extend(run_fastq_aggregate_external(
-            work_dir, entity_id, info["name"], ena_meta_path,
-            [work_dir / rel for rel in summary_rels], any_capped,
+    if fastq_paths:
+        # Both mates (or the one file) go into a single raw_read_qc call --
+        # the aggregate comparison across mates and the per-mate FastQC/
+        # Kraken2 steps all happen inside that one container now.
+        findings.extend(run_raw_read_qc_external(
+            work_dir, entity_id, info["name"], fastq_paths,
+            kraken2_db, expected_species, threads=4,
+            ena_metadata_path=ena_meta_path, any_capped=any_capped,
         ))
+
+    if not keep_files:
+        for fastq_path in fastq_paths:
+            fastq_path.unlink(missing_ok=True)
 
     return findings
 
@@ -422,13 +406,12 @@ def run_fastq_direct(work_dir: Path, entity_id: str, info: dict, expected_specie
 
     findings.extend(run_fq_lint_external(work_dir, entity_id, info["name"], fastq_path))
 
-    if kraken2_db:
-        findings.extend(run_kraken2_external(
-            work_dir, entity_id, info["name"], fastq_path, kraken2_db, expected_species, threads=4,
-        ))
-
-    fastqc_findings, _summary = run_fastqc_external(work_dir, entity_id, info["name"], fastq_path)
-    findings.extend(fastqc_findings)
+    # No ena_metadata_path here -- a direct Synapse upload has no ENA
+    # registry to compare against, so the aggregate comparison is skipped
+    # (same as the old qc_direct_fastq()/fastq_aggregate split).
+    findings.extend(run_raw_read_qc_external(
+        work_dir, entity_id, info["name"], [fastq_path], kraken2_db, expected_species, threads=4,
+    ))
 
     if not keep_files:
         fastq_path.unlink(missing_ok=True)
@@ -469,7 +452,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--geo-accession", default=None)
     p.add_argument("--output-dir", "-d", default="output/docker_qc")
     p.add_argument("--work-dir", default=None)
-    p.add_argument("--kraken2-db", default=None, help="Host path to an extracted Kraken2 database directory")
+    p.add_argument("--kraken2-db", default=None,
+                   help="Host path to an extracted Kraken2 database directory to use INSTEAD of "
+                        "raw_read_qc's own baked-in Standard-8 database (e.g. a smaller one for fast "
+                        "local testing). Kraken2 always runs now that its database is baked into the "
+                        "image rather than fetched on demand.")
     p.add_argument("--max-download-mb", type=float, default=None)
     p.add_argument("--keep-files", action="store_true")
     p.add_argument("--skip-fastqc", action="store_true")

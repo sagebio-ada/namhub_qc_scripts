@@ -63,9 +63,11 @@ def download_kraken2_db(db_path: Path, url: str = _DEFAULT_DB_URL) -> None:
     """Download and extract a Kraken2 database tarball into db_path.
 
     Stdlib-only (urllib/tarfile) so this also works inside the minimal
-    kraken2_qc container without a new pip dependency just for this
-    one-time fetch. Callers should check kraken2_db_staged() first --
-    this doesn't skip an already-staged database itself.
+    raw_read_qc container (where it now bakes the database in at build
+    time, under Python 3.7 -- see that check's Dockerfile) without a new
+    pip dependency just for this one-time fetch. Callers should check
+    kraken2_db_staged() first -- this doesn't skip an already-staged
+    database itself.
     """
     import tarfile
     import urllib.request
@@ -76,7 +78,10 @@ def download_kraken2_db(db_path: Path, url: str = _DEFAULT_DB_URL) -> None:
         shutil.copyfileobj(resp, fh, length=1 << 20)
     with tarfile.open(tarball) as tar:
         tar.extractall(db_path)
-    tarball.unlink(missing_ok=True)
+    try:
+        tarball.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def ensure_kraken2_db(db_path: Path, url: Optional[str] = None) -> List[Finding]:
