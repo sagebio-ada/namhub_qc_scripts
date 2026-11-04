@@ -1,0 +1,84 @@
+name: Smoke test raw_read_qc (x86_64)
+
+# Manual-only: this builds a ~17GB image (Kraken2's full Standard-8 database
+# baked in) and isn't meant to run on every push/PR. It exists to verify
+# scrnaseq_qc_pipeline/checks/py_dcqc/raw_read_qc on a real x86_64 host --
+# FastQC was observed hanging mid-write (never finalizing its own output
+# zip) when run under Rosetta's amd64-on-arm64 translation on Apple
+# Silicon, so this check needs confirming on genuine x86_64 hardware
+# (GitHub-hosted ubuntu-latest runners) rather than a local Mac.
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          docker image prune -af || true
+          docker builder prune -af || true
+          echo "After cleanup:"
+          df -h
+
+      - name: Build raw_read_qc image
+        run: |
+          docker build --platform=linux/amd64 \
+            -f scrnaseq_qc_pipeline/checks/py_dcqc/raw_read_qc/Dockerfile \
+            -t qc-raw-read-qc .
+
+      - name: Generate synthetic test fastq
+        run: |
+          mkdir -p smoke_test
+          python3 - <<'EOF'
+          import gzip
+          import random
+
+          random.seed(1)
+          with gzip.open("smoke_test/test_r1.fastq.gz", "wt") as fh:
+              for i in range(500):
+                  seq = "".join(random.choice("ACGT") for _ in range(75))
+                  qual = "I" * 75
+                  fh.write(f"@read{i}\n{seq}\n+\n{qual}\n")
+          EOF
+          ls -la smoke_test/
+
+      - name: Run raw_read_qc smoke test
+        run: |
+          cd smoke_test
+          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":"$PWD" -w "$PWD" qc-raw-read-qc \
+            /bin/bash -c "python3 /app/run.py 'test_r1.fastq.gz' > std_out.txt 2> std_err.txt; echo \$? > exit_code.txt"
+
+          EXIT_CODE="$(cat exit_code.txt 2>/dev/null || echo MISSING)"
+          echo "--- exit code ---"
+          echo "$EXIT_CODE"
+          echo "--- stdout ---"
+          cat std_out.txt || true
+          echo "--- stderr ---"
+          cat std_err.txt || true
+          echo "--- dir listing ---"
+          find . -maxdepth 3 | sort
+
+          # py-dcqc's own ExternalBaseTest contract: 0=PASS, 1=FAIL (a real
+          # tool-native verdict), 2=ERROR. Both 0 and 1 mean the check ran
+          # to completion correctly; only 2 (or anything else, including a
+          # crash that never wrote exit_code.txt) is a genuine smoke-test
+          # failure.
+          if [ "$EXIT_CODE" != "0" ] && [ "$EXIT_CODE" != "1" ]; then
+            echo "Unexpected result: $EXIT_CODE (expected 0=PASS or 1=FAIL per py-dcqc's exit code contract)"
+            exit 1
+          fi
+
+      - name: Upload smoke test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-read-qc-smoke-test-output
+          path: smoke_test/
