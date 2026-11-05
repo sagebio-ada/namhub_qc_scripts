@@ -45,10 +45,13 @@ RUN echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.l
     echo "deb http://archive.debian.org/debian-security buster/updates main" >> /etc/apt/sources.list && \
     apt-get -o Acquire::Check-Valid-Until=false update && \
     apt-get -o Acquire::Check-Valid-Until=false install -y --no-install-recommends \
-      python3 python3-pip python3-setuptools python3-wheel python3-requests procps && \
+      python3 python3-pip python3-setuptools python3-wheel python3-requests procps \
+      fontconfig fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/* && \
     pip3 install --no-cache-dir --upgrade "pip<24" setuptools wheel && \
-    pip3 install --no-cache-dir "multiqc==1.14"
+    pip3 install --no-cache-dir "multiqc==1.14" && \
+    fc-cache -f && \
+    chmod -R a+rX /etc/fonts /usr/share/fonts /var/cache/fontconfig
 
 FROM --platform=linux/amd64 quay.io/biocontainers/fastqc:0.12.1--hdfd78af_0 AS fastqc_src
 
@@ -76,6 +79,20 @@ COPY --from=pydeps /etc/alternatives /etc/alternatives
 # explicitly below rather than relying on that default resolving correctly.
 COPY --from=pydeps /etc/ssl /etc/ssl
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+
+# Without these, FastQC's --extract-free HTML/image report generation
+# crashes: its per-base-quality plot needs AWT font metrics, which on
+# modern OpenJDK means a real libfontconfig.so + /etc/fonts/fonts.conf +
+# at least one actual font file -- none of which exist in either base
+# image. That crash happens in FastQC's own background analysis thread
+# (uncaught, so FastQC itself never notices or reports it), which means
+# the main thread waiting on it never gets a completion signal and the
+# whole process hangs indefinitely with its output zip stuck half-written
+# -- reproduced identically on both Rosetta-emulated and genuine x86_64
+# hardware, so this is the real root cause of that hang, not emulation.
+COPY --from=pydeps /etc/fonts /etc/fonts
+COPY --from=pydeps /usr/share/fonts /usr/share/fonts
+COPY --from=pydeps /var/cache/fontconfig /var/cache/fontconfig
 
 # MultiQC + its pip-installed dependency tree, and FastQC's own conda
 # install, each kept in their own /opt path rather than merged into this
