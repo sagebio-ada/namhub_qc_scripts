@@ -1,0 +1,171 @@
+diff --git a/src/dcqc/suites/suites.py b/src/dcqc/suites/suites.py
+index 349f93d..1e6348f 100644
+--- a/src/dcqc/suites/suites.py
++++ b/src/dcqc/suites/suites.py
+@@ -65,7 +65,11 @@ class FastqSuite(FileSuite):
+ 
+     target_cls = PairedTarget
+     file_type = FileType.get_file_type("FASTQ")
+-    add_tests = (tests.PairedFastqParityTest,)
++    add_tests = (
++        tests.PairedFastqParityTest,
++        tests.FqLintTest,
++        tests.RawReadQcTest,
++    )
+ 
+ 
+ class TXTSuite(FileSuite):
+diff --git a/src/dcqc/tests/__init__.py b/src/dcqc/tests/__init__.py
+index 5e21e46..5ccd763 100644
+--- a/src/dcqc/tests/__init__.py
++++ b/src/dcqc/tests/__init__.py
+@@ -7,6 +7,7 @@ from dcqc.tests.base_test import (
+ )
+ from dcqc.tests.bioformats_info_test import BioFormatsInfoTest
+ from dcqc.tests.file_extension_test import FileExtensionTest
++from dcqc.tests.fq_lint_test import FqLintTest
+ from dcqc.tests.grep_date_test import GrepDateTest
+ from dcqc.tests.h5ad_htan_validator_test import H5adHtanValidatorTest
+ from dcqc.tests.json_load_test import JsonLoadTest
+@@ -15,5 +16,6 @@ from dcqc.tests.libtiff_info_test import LibTiffInfoTest
+ from dcqc.tests.md5_checksum_test import Md5ChecksumTest
+ from dcqc.tests.ome_xml_schema_test import OmeXmlSchemaTest
+ from dcqc.tests.paired_fastq_parity_test import PairedFastqParityTest
++from dcqc.tests.raw_read_qc_test import RawReadQcTest
+ from dcqc.tests.tiff_date_time_test import TiffDateTimeTest
+ from dcqc.tests.tiff_tag_306_date_time_test import TiffTag306DateTimeTest
+diff --git a/src/dcqc/tests/constants.py b/src/dcqc/tests/constants.py
+index 16c2030..af89d5c 100644
+--- a/src/dcqc/tests/constants.py
++++ b/src/dcqc/tests/constants.py
+@@ -6,5 +6,7 @@ COREUTILS_CONTAINER = "quay.io/biocontainers/coreutils:9.3"
+ HTAN_H5AD_VALIDATOR_CONTAINER = (
+     "ghcr.io/sage-bionetworks-workflows/htan-h5ad-validator:0.1.1"
+ )
++FQ_LINT_CONTAINER = "ghcr.io/sage-bionetworks-workflows/qc-fq-lint:0.1.0"
++RAW_READ_QC_CONTAINER = "ghcr.io/sage-bionetworks-workflows/qc-raw-read-qc:0.1.0"
+ LIBTIFF_CONTAINER = "quay.io/sagebionetworks/libtiff:2.0"
+ TIFFTOOLS_CONTAINER = "ghcr.io/sage-bionetworks-workflows/tifftools:latest"
+diff --git a/src/dcqc/tests/fq_lint_test.py b/src/dcqc/tests/fq_lint_test.py
+new file mode 100644
+index 0000000..1e9d6b7
+--- /dev/null
++++ b/src/dcqc/tests/fq_lint_test.py
+@@ -0,0 +1,31 @@
++"""Goes in py-dcqc at src/dcqc/tests/fq_lint_test.py.
++
++Image: scrnaseq_qc_pipeline/checks/py_dcqc/fq_lint in namhub_qc_scripts.
++"""
++
++from dcqc.target import PairedTarget
++from dcqc.tests.base_test import ExternalBaseTest, Process, TestStatus, TestTier
++from dcqc.tests.constants import FQ_LINT_CONTAINER
++from dcqc.tests.json_stdout_metrics import compute_status_with_json_metrics
++
++
++class FqLintTest(ExternalBaseTest[PairedTarget]):
++    """Tests that each FASTQ file of a pair is structurally valid (fq lint).
++
++    Each file is linted on its own; the paired read-name check is not done.
++    Exit codes: 0 pass, 1 a file is malformed, 2 the check could not run
++    (for example, a missing file).
++    """
++
++    tier = TestTier.INTERNAL_CONFORMANCE
++    pass_code = 0
++    fail_code = 1
++    failure_reason_location = "std_err"
++
++    def generate_process(self) -> Process:
++        paths = [file.stage() for file in self.target.files]
++        command_args = ["python3", "/app/run.py", *(f"'{path.name}'" for path in paths)]
++        return Process(container=FQ_LINT_CONTAINER, command_args=command_args)
++
++    def compute_status(self) -> TestStatus:
++        return compute_status_with_json_metrics(self)
+diff --git a/src/dcqc/tests/json_stdout_metrics.py b/src/dcqc/tests/json_stdout_metrics.py
+new file mode 100644
+index 0000000..f5a43a2
+--- /dev/null
++++ b/src/dcqc/tests/json_stdout_metrics.py
+@@ -0,0 +1,40 @@
++"""Read an external test's metrics from the JSON object its container
++writes to stdout.
++
++Goes in py-dcqc at src/dcqc/tests/json_stdout_metrics.py. Follows the
++compute_status() example in py-dcqc's ARCHITECTURE.md ("Creating the Test
++Class"): the base class never reads metrics from the container, so an
++external test's metrics stay {} unless its class overrides compute_status().
++"""
++
++import json
++
++from dcqc.tests.base_test import ExternalTestMixin, TestStatus
++
++
++def compute_status_with_json_metrics(test: ExternalTestMixin) -> TestStatus:
++    """Interpret the exit code as usual, then load stdout into test.metrics.
++
++    Metrics are read only for passed and failed tests; after an error,
++    stdout can hold partial output. Stdout that is not one JSON object makes
++    the status error, with stderr kept in status_reason.
++    """
++    outputs = test._find_process_outputs()
++    status = test._interpret_process_outputs(outputs)
++    if status not in (TestStatus.PASS, TestStatus.FAIL):
++        return status
++
++    text = outputs["std_out"].read_text().strip()
++    if not text:
++        return status
++    try:
++        metrics = json.loads(text)
++    except json.JSONDecodeError:
++        metrics = None
++    if not isinstance(metrics, dict):
++        reason = "Tool wrote output that is not a JSON object"
++        std_err = outputs["std_err"].read_text()
++        test.status_reason = f"{reason}\n{std_err}" if std_err else reason
++        return TestStatus.ERROR
++    test.metrics = metrics
++    return status
+diff --git a/src/dcqc/tests/raw_read_qc_test.py b/src/dcqc/tests/raw_read_qc_test.py
+new file mode 100644
+index 0000000..5d5922d
+--- /dev/null
++++ b/src/dcqc/tests/raw_read_qc_test.py
+@@ -0,0 +1,34 @@
++"""Goes in py-dcqc at src/dcqc/tests/raw_read_qc_test.py.
++
++Image: scrnaseq_qc_pipeline/checks/py_dcqc/raw_read_qc in namhub_qc_scripts
++(FastQC + Kraken2 + MultiQC in one container). It replaces a separate
++FastQC test, so FastqSuite must not also run one.
++"""
++
++from dcqc.target import PairedTarget
++from dcqc.tests.base_test import ExternalBaseTest, Process, TestStatus, TestTier
++from dcqc.tests.constants import RAW_READ_QC_CONTAINER
++from dcqc.tests.json_stdout_metrics import compute_status_with_json_metrics
++
++
++class RawReadQcTest(ExternalBaseTest[PairedTarget]):
++    """Runs FastQC and Kraken2 on each FASTQ file of a pair, plus MultiQC.
++
++    Fails only when a FastQC module reports FAIL. Kraken2 species, R1/R2
++    read counts and MultiQC's General Statistics are reported as metrics.
++    The ENA registry comparison is skipped: it needs --ena-metadata-json,
++    which py-dcqc cannot supply.
++    """
++
++    tier = TestTier.SUBJECTIVE_CONFORMANCE
++    pass_code = 0
++    fail_code = 1
++    failure_reason_location = "std_err"
++
++    def generate_process(self) -> Process:
++        paths = [file.stage() for file in self.target.files]
++        command_args = ["python3", "/app/run.py", *(f"'{path.name}'" for path in paths)]
++        return Process(container=RAW_READ_QC_CONTAINER, command_args=command_args)
++
++    def compute_status(self) -> TestStatus:
++        return compute_status_with_json_metrics(self)

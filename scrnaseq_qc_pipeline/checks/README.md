@@ -31,6 +31,10 @@ are unrelated and were colliding in name only.)
 
 Current members: `fq_lint`, `raw_read_qc`, `matrix_content_qc`.
 
+The matching py-dcqc test classes (`FqLintTest`, `RawReadQcTest`, the
+`compute_status()` override that reads the stdout metrics, and the
+`FastqSuite` entry) are in `py_dcqc_integration/`, with a patch for py-dcqc.
+
 ## Decided: `fastqc`/`kraken2_qc`/`fastq_aggregate`/`multiqc` merged into `raw_read_qc`
 
 These four used to be separate checks. andrewelamb's PR #1 review

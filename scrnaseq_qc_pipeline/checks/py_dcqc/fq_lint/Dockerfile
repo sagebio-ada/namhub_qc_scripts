@@ -14,7 +14,10 @@
 #   docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":"$PWD" -w "$PWD" \
 #     qc-fq-lint /bin/bash -euo pipefail -c \
 #     "( (python3 /app/run.py 'sample.fastq.gz') > std_out.txt 2> std_err.txt; echo \$? > exit_code.txt ) || true"
-FROM debian:bookworm-slim
+# Pinned to amd64: the fq binary fetched below is x86_64-only, so an
+# unpinned build on an arm64 host (Apple Silicon) gets an arm64 base the
+# binary can't execute in.
+FROM --platform=linux/amd64 debian:bookworm-slim
 WORKDIR /app
 
 ARG FQ_VERSION=0.12.0

@@ -109,14 +109,19 @@ def ensure_kraken2_db(db_path: Path, url: Optional[str] = None) -> List[Finding]
                           f"Downloaded and extracted database to {db_path}")]
 
 
-def run_kraken2(fastq_path: Path, db_path: str, outdir: Path, threads: int = 4) -> Path:
-    outdir.mkdir(parents=True, exist_ok=True)
+def kraken2_report_path(fastq_path: Path, outdir: Path) -> Path:
+    """Where run_kraken2() writes the --report file for fastq_path."""
     stem = fastq_path.name
     for suf in (".fastq.gz", ".fq.gz", ".fastq", ".fq"):
         if stem.endswith(suf):
             stem = stem[: -len(suf)]
             break
-    report_path = outdir / f"{stem}.kraken2report.txt"
+    return outdir / f"{stem}.kraken2report.txt"
+
+
+def run_kraken2(fastq_path: Path, db_path: str, outdir: Path, threads: int = 4) -> Path:
+    outdir.mkdir(parents=True, exist_ok=True)
+    report_path = kraken2_report_path(fastq_path, outdir)
     cmd = [
         "kraken2", "--db", db_path, "--threads", str(threads),
         "--report", str(report_path), "--output", "/dev/null",

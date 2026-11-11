@@ -29,9 +29,12 @@ https://github.com/Sage-Bionetworks-Workflows/py-dcqc/pull/96):
      MultiQC crashed -- operational failures, not verdicts about the data.
 
 Metrics (one JSON object on stdout): per-mate FastQC summary + modules,
-per-mate Kraken2 classification, the ENA-registry aggregate comparisons
-(omitted if --ena-metadata-json isn't given), and the MultiQC report
-filename.
+per-mate Kraken2 classification (species is reported, never pass/fail),
+the R1/R2 read-count parity, the ENA-registry aggregate comparisons
+(optional -- skipped unless --ena-metadata-json is given, which py-dcqc
+can't supply), the MultiQC report filename, and MultiQC's General
+Statistics table. The MultiQC HTML itself is only kept if nf-dcqc
+publishes it as an output.
 
 KNOWN DEVIATION: MultiQC here only ever aggregates this one run's own 1-2
 mate files' FastQC/Kraken2 output, not every sample in a whole work
@@ -49,12 +52,46 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from fastq_qc import FASTQC_INSTALL_HINT, aggregate_fastq_checks, fastqc_available, run_fastqc_and_summarize  # noqa: E402
-from kraken_qc import KRAKEN2_INSTALL_HINT, kraken2_available, kraken2_db_staged, qc_kraken2  # noqa: E402
-from multiqc_qc import run_multiqc  # noqa: E402
+from kraken_qc import (  # noqa: E402
+    KRAKEN2_INSTALL_HINT, kraken2_available, kraken2_db_staged, kraken2_report_path, parse_kraken2_report, qc_kraken2,
+)
+from multiqc_qc import read_general_stats, run_multiqc  # noqa: E402
 from scrnaseq_common import DCQC_ERROR, DCQC_FAIL, DCQC_PASS, emit_dcqc_metrics, emit_dcqc_reason  # noqa: E402
 
 # Baked into this image's final stage -- see the Dockerfile.
 DEFAULT_KRAKEN2_DB = "/opt/kraken2-db"
+
+_TOP_N_SPECIES = 5
+
+
+def _number(value):
+    """FastQC's "2,000" / "49" -> 2000 / 49; anything else (e.g. a length
+    range like "35-151") is returned unchanged."""
+    text = str(value).replace(",", "").strip()
+    try:
+        return int(text)
+    except ValueError:
+        try:
+            return float(text)
+        except ValueError:
+            return value
+
+
+def _kraken2_metrics(fastq_path: Path, kraken2_dir: Path, expected_species):
+    """Numeric Kraken2 metrics from the --report file qc_kraken2() wrote."""
+    rows = parse_kraken2_report(kraken2_report_path(fastq_path, kraken2_dir))
+    unclassified = next((r for r in rows if r["rank"] == "U"), None)
+    species = sorted((r for r in rows if r["rank"] == "S"), key=lambda r: -r["pct"])
+    metrics = {
+        "unclassified_pct": unclassified["pct"] if unclassified else 0.0,
+        "top_species": [{"name": r["name"], "pct": r["pct"]} for r in species[:_TOP_N_SPECIES]],
+    }
+    if expected_species:
+        # Reported only -- the species never affects pass/fail.
+        match = next((r for r in species if r["name"].lower() == expected_species.lower()), None)
+        metrics["expected_species"] = expected_species
+        metrics["expected_species_pct"] = match["pct"] if match else 0.0
+    return metrics
 
 
 def main() -> int:
@@ -122,17 +159,9 @@ def main() -> int:
             f["check"].split(":", 1)[1]: f["status"]
             for f in fastqc_findings if f["check"].startswith("fastqc_module:")
         }
-        module_details = {
-            f["check"].split(":", 1)[1]: f["metric"]
-            for f in fastqc_findings if f["check"].startswith("fastqc_module:")
-        }
         failed_modules = [name for name, status in modules.items() if status == "FAIL"]
         if failed_modules:
-            details = "; ".join(
-                f["metric"] for f in fastqc_findings
-                if f["check"].startswith("fastqc_module:") and f["status"] == "FAIL"
-            )
-            module_fail_details.append(f"{fname}: FAIL module(s) {', '.join(failed_modules)} -- {details}")
+            module_fail_details.append(f"{fname}: FastQC FAIL module(s): {', '.join(failed_modules)}")
 
         kraken2_findings = qc_kraken2(
             fname, fname, fastq_path, args.db_path, kraken2_dir,
@@ -145,39 +174,40 @@ def main() -> int:
             emit_dcqc_reason(f"{fname}: {by_kraken2_check['kraken2']['metric']}")
             return DCQC_ERROR
 
-        mate_metrics = {
+        per_mate_metrics.append({
             "fname": fname,
             "fastqc": {
-                "total_sequences": summary.get("total_sequences"),
-                "sequence_length": summary.get("sequence_length"),
-                "pct_gc": summary.get("pct_gc"),
+                "total_sequences": _number(summary.get("total_sequences")),
+                "sequence_length": _number(summary.get("sequence_length")),
+                "pct_gc": _number(summary.get("pct_gc")),
                 "modules": modules,
-                "module_details": module_details,
             },
-            "kraken2": {
-                "unclassified": by_kraken2_check.get("kraken2_unclassified", {}).get("metric"),
-                "top_species": by_kraken2_check.get("kraken2_top_species", {}).get("metric"),
-            },
-        }
-        if "kraken2_species_match" in by_kraken2_check:
-            mate_metrics["kraken2"]["species_match"] = by_kraken2_check["kraken2_species_match"]["metric"]
-        per_mate_metrics.append(mate_metrics)
+            "kraken2": _kraken2_metrics(fastq_path, kraken2_dir, args.expected_species),
+        })
 
-    aggregate_metrics = {}
+    # The R1/R2 parity check needs only the FastQC summaries, so it always
+    # runs. The two ENA-registry comparisons are optional: they need
+    # --ena-metadata-json, which py-dcqc has no way to supply (it stages only
+    # the target files), so under py-dcqc they're always skipped.
+    ena_links = []
     if args.ena_metadata_json:
         try:
             with open(args.ena_metadata_json) as fh:
-                ena_metadata = json.load(fh)
+                ena_links = json.load(fh).get("links", [])
         except Exception as exc:
             emit_dcqc_reason(f"Could not read {args.ena_metadata_json}: {exc}")
             return DCQC_ERROR
-        aggregate_findings = aggregate_fastq_checks(
-            "aggregate", "aggregate", per_file_summaries, ena_metadata.get("links", []), args.any_capped,
-        )
-        by_aggregate_check = {f["check"]: f["metric"] for f in aggregate_findings}
-        for check in ("read_count_vs_ena", "paired_fastq_parity", "mean_length_vs_registry"):
-            if check in by_aggregate_check:
-                aggregate_metrics[check] = by_aggregate_check[check]
+    aggregate_findings = aggregate_fastq_checks(
+        "aggregate", "aggregate", per_file_summaries, ena_links, args.any_capped,
+    )
+    by_aggregate_check = {f["check"]: f["metric"] for f in aggregate_findings}
+    aggregate_metrics = {
+        check: by_aggregate_check[check]
+        for check in ("read_count_vs_ena", "paired_fastq_parity", "mean_length_vs_registry")
+        if check in by_aggregate_check
+    }
+    if not args.ena_metadata_json:
+        aggregate_metrics["ena_comparison"] = "skipped: no --ena-metadata-json given"
 
     try:
         report_path = run_multiqc(Path("."), Path("."), report_name=args.report_name)
@@ -189,6 +219,11 @@ def main() -> int:
         "mates": per_mate_metrics,
         "aggregate": aggregate_metrics,
         "multiqc_report_file": report_path.name,
+        # The HTML report itself is a file in the container's working
+        # directory; nf-dcqc has to publish it as an output to keep it. Its
+        # General Statistics table is carried here so the numbers survive
+        # even if the HTML doesn't.
+        "multiqc_general_stats": read_general_stats(Path("."), args.report_name),
     })
 
     if module_fail_details:
