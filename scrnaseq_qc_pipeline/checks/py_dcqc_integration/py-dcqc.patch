@@ -1,8 +1,22 @@
+diff --git a/src/dcqc/file.py b/src/dcqc/file.py
+index 50ce7c4..a95665a 100644
+--- a/src/dcqc/file.py
++++ b/src/dcqc/file.py
+@@ -153,6 +153,9 @@ FileType("BAM", (".bam",), "format_2572")
+ FileType("FASTQ", (".fastq", ".fastq.gz", ".fq", ".fq.gz"), "format_1930")
+ FileType("HDF5", (".hdf", ".hdf5", ".h5", ".he5"), "format_3590")
+ FileType("H5AD", (".h5ad",), "format_3590")
++# A single-cell count matrix (barcodes.tsv, features.tsv, matrix.mtx) packaged
++# as one tar archive. format_3981 is EDAM's "TAR format".
++FileType("10X-MATRIX", (".tar.gz", ".tgz", ".tar"), "format_3981")
+ 
+ 
+ # TODO: Leverage post-init function in dataclasses
 diff --git a/src/dcqc/suites/suites.py b/src/dcqc/suites/suites.py
-index 349f93d..1e6348f 100644
+index 349f93d..4d07a60 100644
 --- a/src/dcqc/suites/suites.py
 +++ b/src/dcqc/suites/suites.py
-@@ -65,7 +65,11 @@ class FastqSuite(FileSuite):
+@@ -65,7 +65,18 @@ class FastqSuite(FileSuite):
  
      target_cls = PairedTarget
      file_type = FileType.get_file_type("FASTQ")
@@ -12,14 +26,21 @@ index 349f93d..1e6348f 100644
 +        tests.FqLintTest,
 +        tests.RawReadQcTest,
 +    )
++
++
++class MatrixSuite(FileSuite):
++    """Suite class for single-cell count matrices packaged as one archive."""
++
++    file_type = FileType.get_file_type("10X-MATRIX")
++    add_tests = (tests.MatrixContentQcTest,)
  
  
  class TXTSuite(FileSuite):
 diff --git a/src/dcqc/tests/__init__.py b/src/dcqc/tests/__init__.py
-index 5e21e46..5ccd763 100644
+index 5e21e46..eb2ebe5 100644
 --- a/src/dcqc/tests/__init__.py
 +++ b/src/dcqc/tests/__init__.py
-@@ -7,6 +7,7 @@ from dcqc.tests.base_test import (
+@@ -7,13 +7,16 @@ from dcqc.tests.base_test import (
  )
  from dcqc.tests.bioformats_info_test import BioFormatsInfoTest
  from dcqc.tests.file_extension_test import FileExtensionTest
@@ -27,7 +48,9 @@ index 5e21e46..5ccd763 100644
  from dcqc.tests.grep_date_test import GrepDateTest
  from dcqc.tests.h5ad_htan_validator_test import H5adHtanValidatorTest
  from dcqc.tests.json_load_test import JsonLoadTest
-@@ -15,5 +16,6 @@ from dcqc.tests.libtiff_info_test import LibTiffInfoTest
+ from dcqc.tests.jsonld_load_test import JsonLdLoadTest
+ from dcqc.tests.libtiff_info_test import LibTiffInfoTest
++from dcqc.tests.matrix_content_qc_test import MatrixContentQcTest
  from dcqc.tests.md5_checksum_test import Md5ChecksumTest
  from dcqc.tests.ome_xml_schema_test import OmeXmlSchemaTest
  from dcqc.tests.paired_fastq_parity_test import PairedFastqParityTest
@@ -35,15 +58,18 @@ index 5e21e46..5ccd763 100644
  from dcqc.tests.tiff_date_time_test import TiffDateTimeTest
  from dcqc.tests.tiff_tag_306_date_time_test import TiffTag306DateTimeTest
 diff --git a/src/dcqc/tests/constants.py b/src/dcqc/tests/constants.py
-index 16c2030..af89d5c 100644
+index 16c2030..11df086 100644
 --- a/src/dcqc/tests/constants.py
 +++ b/src/dcqc/tests/constants.py
-@@ -6,5 +6,7 @@ COREUTILS_CONTAINER = "quay.io/biocontainers/coreutils:9.3"
+@@ -6,5 +6,10 @@ COREUTILS_CONTAINER = "quay.io/biocontainers/coreutils:9.3"
  HTAN_H5AD_VALIDATOR_CONTAINER = (
      "ghcr.io/sage-bionetworks-workflows/htan-h5ad-validator:0.1.1"
  )
 +FQ_LINT_CONTAINER = "ghcr.io/sage-bionetworks-workflows/qc-fq-lint:0.1.0"
 +RAW_READ_QC_CONTAINER = "ghcr.io/sage-bionetworks-workflows/qc-raw-read-qc:0.1.0"
++MATRIX_CONTENT_QC_CONTAINER = (
++    "ghcr.io/sage-bionetworks-workflows/qc-matrix-content-qc:0.1.0"
++)
  LIBTIFF_CONTAINER = "quay.io/sagebionetworks/libtiff:2.0"
  TIFFTOOLS_CONTAINER = "ghcr.io/sage-bionetworks-workflows/tifftools:latest"
 diff --git a/src/dcqc/tests/fq_lint_test.py b/src/dcqc/tests/fq_lint_test.py
@@ -129,6 +155,46 @@ index 0000000..f5a43a2
 +        return TestStatus.ERROR
 +    test.metrics = metrics
 +    return status
+diff --git a/src/dcqc/tests/matrix_content_qc_test.py b/src/dcqc/tests/matrix_content_qc_test.py
+new file mode 100644
+index 0000000..b8ef423
+--- /dev/null
++++ b/src/dcqc/tests/matrix_content_qc_test.py
+@@ -0,0 +1,34 @@
++"""Goes in py-dcqc at src/dcqc/tests/matrix_content_qc_test.py.
++
++Image: scrnaseq_qc_pipeline/checks/py_dcqc/matrix_content_qc in
++namhub_qc_scripts.
++"""
++
++from dcqc.target import SingleTarget
++from dcqc.tests.base_test import ExternalBaseTest, Process, TestStatus, TestTier
++from dcqc.tests.constants import MATRIX_CONTENT_QC_CONTAINER
++from dcqc.tests.json_stdout_metrics import compute_status_with_json_metrics
++
++
++class MatrixContentQcTest(ExternalBaseTest[SingleTarget]):
++    """Tests a single-cell count matrix packaged as one tar archive.
++
++    The archive holds barcodes.tsv, features.tsv (or genes.tsv) and
++    matrix.mtx, gzipped or not, at any depth, for example GEO's
++    <sample>_filtered_feature_bc_matrix.tar.gz. Fails if the archive or a
++    file in it can't be read, or if no barcode has any counts. Cell and gene
++    counts, empty barcodes and the mitochondrial fraction are metrics.
++    """
++
++    tier = TestTier.INTERNAL_CONFORMANCE
++    pass_code = 0
++    fail_code = 1
++    failure_reason_location = "std_err"
++
++    def generate_process(self) -> Process:
++        path = self.target.file.stage()
++        command_args = ["python3", "/app/run.py", f"'{path.name}'"]
++        return Process(container=MATRIX_CONTENT_QC_CONTAINER, command_args=command_args)
++
++    def compute_status(self) -> TestStatus:
++        return compute_status_with_json_metrics(self)
 diff --git a/src/dcqc/tests/raw_read_qc_test.py b/src/dcqc/tests/raw_read_qc_test.py
 new file mode 100644
 index 0000000..5d5922d
@@ -170,40 +236,79 @@ index 0000000..5d5922d
 +    def compute_status(self) -> TestStatus:
 +        return compute_status_with_json_metrics(self)
 diff --git a/tests/test_external_tests.py b/tests/test_external_tests.py
-index 14432f4..17cd52a 100644
+index 14432f4..8968764 100644
 --- a/tests/test_external_tests.py
 +++ b/tests/test_external_tests.py
-@@ -8,7 +8,9 @@ import pytest
+@@ -8,7 +8,13 @@ import pytest
  
  import docker
  from dcqc import tests
-+from dcqc.target import PairedTarget
++from dcqc.target import PairedTarget, SingleTarget
  from dcqc.tests import BaseTest, ExternalTestMixin, Process, TestStatus
-+from dcqc.tests.constants import FQ_LINT_CONTAINER, RAW_READ_QC_CONTAINER
++from dcqc.tests.constants import (
++    FQ_LINT_CONTAINER,
++    MATRIX_CONTENT_QC_CONTAINER,
++    RAW_READ_QC_CONTAINER,
++)
  
  
  def test_that_all_external_tests_inherit_from_the_mixin_first():
-@@ -519,3 +521,101 @@ class TestH5adHtanValidatorTest:
+@@ -519,3 +525,120 @@ class TestH5adHtanValidatorTest:
              )
              test_status = test.get_status()
              assert test_status == TestStatus.FAIL
 +
 +
-+# FqLintTest and RawReadQcTest share their command shape and their
++# These classes run "python3 /app/run.py" on the target files and share one
 +# compute_status() override (compute_status_with_json_metrics), so the same
-+# tests run for both classes.
++# tests run for each of them. MatrixContentQcTest gets a TXT file here: the
++# tests check only the command and the handling of the container outputs.
++FASTQ_PAIR = (PairedTarget, ("good_fastq", "good_compressed_fastq"))
 +JSON_METRICS_TESTS = [
-+    pytest.param(tests.FqLintTest, FQ_LINT_CONTAINER, id="FqLintTest"),
-+    pytest.param(tests.RawReadQcTest, RAW_READ_QC_CONTAINER, id="RawReadQcTest"),
++    pytest.param(
++        tests.FqLintTest,
++        FQ_LINT_CONTAINER,
++        *FASTQ_PAIR,
++        "python3 /app/run.py 'fastq1.fastq' 'fastq2.fastq.gz'",
++        id="FqLintTest",
++    ),
++    pytest.param(
++        tests.RawReadQcTest,
++        RAW_READ_QC_CONTAINER,
++        *FASTQ_PAIR,
++        "python3 /app/run.py 'fastq1.fastq' 'fastq2.fastq.gz'",
++        id="RawReadQcTest",
++    ),
++    pytest.param(
++        tests.MatrixContentQcTest,
++        MATRIX_CONTENT_QC_CONTAINER,
++        SingleTarget,
++        ("good_txt",),
++        "python3 /app/run.py 'test.txt'",
++        id="MatrixContentQcTest",
++    ),
 +]
 +
 +
-+@pytest.mark.parametrize("test_class, container", JSON_METRICS_TESTS)
-+class TestJsonMetricsFastqTests:
++@pytest.mark.parametrize(
++    "test_class, container, target_cls, file_names, command", JSON_METRICS_TESTS
++)
++class TestJsonMetricsTests:
 +    @pytest.fixture(scope="function", autouse=True)
-+    def setup_method(self, test_files, tmp_path):
-+        files = [test_files["good_fastq"], test_files["good_compressed_fastq"]]
-+        self.target = PairedTarget(files)
++    def setup_method(
++        self,
++        test_files,
++        tmp_path,
++        test_class,
++        container,
++        target_cls,
++        file_names,
++        command,
++    ):
++        self.test_class = test_class
++        self.container = container
++        self.command = command
++        self.target = target_cls([test_files[name] for name in file_names])
 +        self.tmp_path = tmp_path
 +
 +    def get_status_for(self, test, mocker, std_out, std_err, exit_code):
@@ -219,28 +324,20 @@ index 14432f4..17cd52a 100644
 +        mocker.patch.object(test, "_find_process_outputs", return_value=outputs)
 +        return test.get_status()
 +
-+    def test_that_the_command_runs_the_entry_file_on_both_files(
-+        self, test_class, container
-+    ):
-+        process = test_class(self.target).generate_process()
-+        assert process.container == container
-+        assert process.command == (
-+            "python3 /app/run.py 'fastq1.fastq' 'fastq2.fastq.gz'"
-+        )
++    def test_that_the_command_runs_the_entry_file_on_the_target_files(self):
++        process = self.test_class(self.target).generate_process()
++        assert process.container == self.container
++        assert process.command == self.command
 +
-+    def test_that_exit_code_0_passes_and_reads_the_metrics(
-+        self, test_class, container, mocker
-+    ):
-+        test = test_class(self.target)
++    def test_that_exit_code_0_passes_and_reads_the_metrics(self, mocker):
++        test = self.test_class(self.target)
 +        status = self.get_status_for(test, mocker, '{"files": []}', "", "0")
 +        assert status == TestStatus.PASS
 +        assert test.metrics == {"files": []}
 +        assert test.status_reason == ""
 +
-+    def test_that_exit_code_1_fails_and_reads_the_metrics_and_reason(
-+        self, test_class, container, mocker
-+    ):
-+        test = test_class(self.target)
++    def test_that_exit_code_1_fails_and_reads_the_metrics_and_reason(self, mocker):
++        test = self.test_class(self.target)
 +        status = self.get_status_for(
 +            test, mocker, '{"n_errors": 1}', "fastq1.fastq: bad record", "1"
 +        )
@@ -248,10 +345,8 @@ index 14432f4..17cd52a 100644
 +        assert test.metrics == {"n_errors": 1}
 +        assert test.status_reason == "fastq1.fastq: bad record"
 +
-+    def test_that_exit_code_2_is_an_error_and_the_metrics_are_not_read(
-+        self, test_class, container, mocker
-+    ):
-+        test = test_class(self.target)
++    def test_that_exit_code_2_is_an_error_and_the_metrics_are_not_read(self, mocker):
++        test = self.test_class(self.target)
 +        status = self.get_status_for(
 +            test, mocker, '{"partial": true}', "fastq1.fastq: file not found", "2"
 +        )
@@ -259,10 +354,8 @@ index 14432f4..17cd52a 100644
 +        assert test.metrics == {}
 +        assert test.status_reason == "fastq1.fastq: file not found"
 +
-+    def test_that_stdout_that_is_not_json_is_an_error(
-+        self, test_class, container, mocker
-+    ):
-+        test = test_class(self.target)
++    def test_that_stdout_that_is_not_json_is_an_error(self, mocker):
++        test = self.test_class(self.target)
 +        status = self.get_status_for(test, mocker, "not json", "a warning", "0")
 +        assert status == TestStatus.ERROR
 +        assert test.metrics == {}
@@ -270,18 +363,14 @@ index 14432f4..17cd52a 100644
 +            "Tool wrote output that is not a JSON object\na warning"
 +        )
 +
-+    def test_that_a_json_value_that_is_not_an_object_is_an_error(
-+        self, test_class, container, mocker
-+    ):
-+        test = test_class(self.target)
++    def test_that_a_json_value_that_is_not_an_object_is_an_error(self, mocker):
++        test = self.test_class(self.target)
 +        status = self.get_status_for(test, mocker, "[1, 2]", "", "1")
 +        assert status == TestStatus.ERROR
 +        assert test.status_reason == "Tool wrote output that is not a JSON object"
 +
-+    def test_that_empty_stdout_passes_with_no_metrics(
-+        self, test_class, container, mocker
-+    ):
-+        test = test_class(self.target)
++    def test_that_empty_stdout_passes_with_no_metrics(self, mocker):
++        test = self.test_class(self.target)
 +        status = self.get_status_for(test, mocker, "", "", "0")
 +        assert status == TestStatus.PASS
 +        assert test.metrics == {}
@@ -308,21 +397,34 @@ index d9f44a3..26dce52 100644
          # THEN the TXT row gives a TXTSuite, and the pair gives a FastqSuite
          assert [type(suite) for suite in suites] == [TXTSuite, FastqSuite]
 diff --git a/tests/test_suites.py b/tests/test_suites.py
-index c318566..efdb8fd 100644
+index c318566..36075b3 100644
 --- a/tests/test_suites.py
 +++ b/tests/test_suites.py
-@@ -10,8 +10,10 @@ from dcqc.target import BaseTarget, PairedTarget, SingleTarget
+@@ -5,13 +5,22 @@ import pytest
+ 
+ from dcqc.file import File, FileType
+ from dcqc.suites.suite_abc import SuiteABC, SuiteStatus
+-from dcqc.suites.suites import FastqSuite, FileSuite, OmeTiffSuite, TiffSuite
++from dcqc.suites.suites import (
++    FastqSuite,
++    FileSuite,
++    MatrixSuite,
++    OmeTiffSuite,
++    TiffSuite,
++)
+ from dcqc.target import BaseTarget, PairedTarget, SingleTarget
  from dcqc.tests import (
      BaseTest,
      FileExtensionTest,
 +    FqLintTest,
      LibTiffInfoTest,
++    MatrixContentQcTest,
      PairedFastqParityTest,
 +    RawReadQcTest,
      TestStatus,
      TiffDateTimeTest,
      TiffTag306DateTimeTest,
-@@ -490,3 +492,14 @@ class TestEnsureAcceptsTargetCls:
+@@ -490,3 +499,21 @@ class TestEnsureAcceptsTargetCls:
          message = "but FileSuite for file type 'Unpaired'"
          with pytest.raises(ValueError, match=message):
              suite_cls.ensure_accepts_target_cls(PairedTarget, file_type, ["a", "b"])
@@ -337,3 +439,10 @@ index c318566..efdb8fd 100644
 +    )
 +    assert FqLintTest.target_cls is PairedTarget
 +    assert RawReadQcTest.target_cls is PairedTarget
++
++
++def test_that_a_matrix_archive_gets_the_matrix_suite():
++    """A 10X-MATRIX file is one archive, so its suite takes a SingleTarget."""
++    assert SuiteABC.get_subclass_by_file_type("10X-MATRIX") is MatrixSuite
++    assert MatrixSuite.add_tests == (MatrixContentQcTest,)
++    assert MatrixSuite.target_cls is SingleTarget

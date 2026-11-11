@@ -47,7 +47,7 @@ where a check is otherwise assay-agnostic.
 | `fastq_resolution` | ✗ | ✓ | ✓ | ✓ | ✓ | Generic SRA→ENA link resolution via accession |
 | `geo_metadata_fetch` | ✗ | ✓ | ~ | ✓ | ✓ | Works for any GEO-deposited series — but WGS is typically deposited to dbGaP/SRA, not GEO, so this wouldn't find a record for most WGS data |
 | `geo_annotation_check` | ✗ | ✓ | ~ | ✓ | ✓ | Same caveat — depends on `geo_metadata_fetch` actually finding a GEO record |
-| `matrix_content_qc` | ✓ | ✗ | ✗ | ✓ | ✗ | Hard-coded to CellRanger's specific 3-file sparse-matrix format (barcodes/features/matrix.mtx) — no equivalent concept in WGS or bulk RNA-seq's single-profile-per-sample output. **Open question as of 2026-11-04**: Andrew's PR #1 review also flagged this 3-file requirement as beyond py-dcqc's tested Target cardinality — the same structural issue `fastq_aggregate` had, not yet resolved the way `raw_read_qc` resolved it |
+| `matrix_content_qc` | ✓ | ✗ | ✗ | ✓ | ✗ | Hard-coded to CellRanger's specific 3-file sparse-matrix format (barcodes/features/matrix.mtx) — no equivalent concept in WGS or bulk RNA-seq's single-profile-per-sample output. **Resolved 2026-11-11**: Andrew's PR #1 review flagged the 3-file input as beyond py-dcqc's Target cardinality. The check now also takes the three files packaged as one tar archive (GEO's `*_filtered_feature_bc_matrix.tar.gz`, or one made with `package_matrix.py`), so py-dcqc runs it on a SingleTarget of the new `10X-MATRIX` file type |
 | `matrix_download` | ✗ | ✗ | ✗ | ✓ | ✗ | Same — downloads specifically the CellRanger 3-role file set |
 
 **Totals: ATAC-seq 7/9, WGS 5/9 (+2 partial), scRNA-seq 9/9, Bulk RNA-seq 7/9. py-dcqc fit: 3/9.**

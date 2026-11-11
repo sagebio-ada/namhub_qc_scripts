@@ -31,9 +31,15 @@ are unrelated and were colliding in name only.)
 
 Current members: `fq_lint`, `raw_read_qc`, `matrix_content_qc`.
 
-The matching py-dcqc test classes (`FqLintTest`, `RawReadQcTest`, the
-`compute_status()` override that reads the stdout metrics, and the
-`FastqSuite` entry) are in `py_dcqc_integration/`, with a patch for py-dcqc.
+`matrix_content_qc` takes one tar archive holding barcodes/features/matrix
+(GEO's `*_filtered_feature_bc_matrix.tar.gz` works as-is; for loose files,
+`../package_matrix.py` builds one), so py-dcqc can run it on a single file.
+It still accepts the three files directly, for use outside py-dcqc.
+
+The matching py-dcqc test classes (`FqLintTest`, `RawReadQcTest`,
+`MatrixContentQcTest`, the `compute_status()` override that reads the stdout
+metrics, and the `FastqSuite`/`MatrixSuite` entries) are in
+`py_dcqc_integration/`, with a patch for py-dcqc.
 
 ## Decided: `fastqc`/`kraken2_qc`/`fastq_aggregate`/`multiqc` merged into `raw_read_qc`
 

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import gzip
+import tarfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import IO, Dict, List, Optional
 
 import numpy as np
 
@@ -13,15 +14,83 @@ from scrnaseq_common import Finding, make_finding
 REQUIRED_ROLES = {"barcodes", "features", "matrix"}
 
 
-def _count_gz_lines(path: Path) -> int:
-    with gzip.open(path, "rt") as fh:
+def _open(path: Path, mode: str = "rt") -> IO:
+    """Open a matrix file, gzipped (.gz) or not."""
+    return gzip.open(path, mode) if path.name.endswith(".gz") else open(path, mode)
+
+
+def _count_lines(path: Path) -> int:
+    with _open(path) as fh:
         return sum(1 for _ in fh)
+
+
+# Member names accepted for each role, with or without .gz. genes.tsv is
+# the CellRanger v2 name for features.tsv.
+ARCHIVE_ROLE_NAMES = {
+    "barcodes": ("barcodes.tsv",),
+    "features": ("features.tsv", "genes.tsv"),
+    "matrix": ("matrix.mtx",),
+}
+
+
+def _archive_role(member_name: str) -> Optional[str]:
+    base = Path(member_name).name
+    if base.endswith(".gz"):
+        base = base[: -len(".gz")]
+    return next((role for role, names in ARCHIVE_ROLE_NAMES.items() if base in names), None)
+
+
+def extract_matrix_archive(archive_path: Path, dest_dir: Path) -> Dict[str, Path]:
+    """Extract barcodes/features/matrix from a tar archive (e.g. GEO's
+    <sample>_filtered_feature_bc_matrix.tar.gz) into dest_dir.
+
+    Members are found by file name at any depth, so a top-level folder
+    inside the archive is fine. Only those three regular files are
+    extracted, each flattened into dest_dir, so a member path can never
+    write outside it.
+
+    Raises ValueError if a role is missing or appears more than once (for
+    example, both a raw and a filtered matrix in one archive), and
+    tarfile.TarError if the archive can't be read.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive_path, "r:*") as tar:
+        found: Dict[str, List[tarfile.TarInfo]] = {role: [] for role in ARCHIVE_ROLE_NAMES}
+        for member in tar.getmembers():
+            role = _archive_role(member.name) if member.isfile() else None
+            if role:
+                found[role].append(member)
+
+        missing = sorted(role for role, members in found.items() if not members)
+        duplicated = sorted(role for role, members in found.items() if len(members) > 1)
+        if missing or duplicated:
+            problems = []
+            if missing:
+                problems.append(f"missing {missing}")
+            if duplicated:
+                problems.append(
+                    "more than one file for "
+                    + ", ".join(f"{r} ({', '.join(m.name for m in found[r])})" for r in duplicated)
+                )
+            raise ValueError("; ".join(problems))
+
+        paths: Dict[str, Path] = {}
+        for role, (member,) in found.items():
+            out = dest_dir / Path(member.name).name
+            with tar.extractfile(member) as src, open(out, "wb") as dst:
+                while True:
+                    chunk = src.read(1 << 20)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+            paths[role] = out
+    return paths
 
 
 def _mito_fraction(features_path: Path, matrix) -> Optional[np.ndarray]:
     """Fraction of counts per cell coming from MT- genes, or None if none found."""
     mito_rows = []
-    with gzip.open(features_path, "rt") as fh:
+    with _open(features_path) as fh:
         for i, line in enumerate(fh):
             parts = line.rstrip("\n").split("\t")
             symbol = parts[1] if len(parts) > 1 else parts[0]
@@ -100,8 +169,8 @@ def qc_matrix_content(
         findings.append(make_finding(sample_id, sample_id, check, status, detail))
 
     try:
-        n_barcodes = _count_gz_lines(barcodes_path)
-        n_features = _count_gz_lines(features_path)
+        n_barcodes = _count_lines(barcodes_path)
+        n_features = _count_lines(features_path)
     except Exception as exc:
         add("file_integrity", "FAIL", f"Could not read barcodes/features files: {exc}")
         return findings
@@ -109,12 +178,12 @@ def qc_matrix_content(
 
     try:
         import scipy.io
-        with gzip.open(matrix_path, "rb") as fh:
+        with _open(matrix_path, "rb") as fh:
             mat = scipy.io.mmread(fh).tocsc()
     except Exception as exc:
-        add("matrix_integrity", "FAIL", f"Could not parse matrix.mtx.gz: {exc}")
+        add("matrix_integrity", "FAIL", f"Could not parse {matrix_path.name}: {exc}")
         return findings
-    add("matrix_integrity", "INFO", f"matrix.mtx.gz parsed: shape {mat.shape}, nnz={mat.nnz}")
+    add("matrix_integrity", "INFO", f"{matrix_path.name} parsed: shape {mat.shape}, nnz={mat.nnz}")
 
     add("matrix_dimensions", "INFO",
         f"matrix header shape={mat.shape} vs counted (features={n_features}, barcodes={n_barcodes})")
