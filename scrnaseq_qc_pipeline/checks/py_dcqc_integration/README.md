@@ -28,14 +28,32 @@ The patch also:
   There is **no separate `FastqcTest`**. `RawReadQcTest` already runs FastQC,
   so a separate test would report the same FastQC FAIL two times.
 
+### Unit tests in the patch
+
+- `tests/test_external_tests.py`: `TestJsonMetricsFastqTests` runs for both
+  classes. It checks the container and command, and the result for each
+  case:
+  - exit 0: pass, metrics read;
+  - exit 1: fail, metrics and the stderr reason read;
+  - exit 2: error, metrics not read;
+  - stdout that is not JSON, or JSON that is not an object: error;
+  - empty stdout: pass with no metrics.
+- `tests/test_suites.py`: checks that `FastqSuite.add_tests` is exactly
+  `(PairedFastqParityTest, FqLintTest, RawReadQcTest)`.
+- `tests/test_parsers.py`: the existing "grouped FASTQ manifest gives a suite
+  that runs" test now skips the external tests, as `run_pipeline` in
+  `tests/test_main.py` already does. Without the skip, it would try to read
+  container outputs that only nf-dcqc makes.
+
+No Docker exit-code tests (`@docker_enabled_test`) were added. They need the
+images to be published first.
+
 ## Before merging
 
 - **Image names are placeholders.** The `ghcr.io/sage-bionetworks-workflows/qc-*:0.1.0`
   values in `constants.py` must match where the images are published.
-- **No unit tests were added to py-dcqc yet.** ARCHITECTURE.md asks for tests
-  in `tests/test_external_tests.py`. The tests should check the `Process`, the
-  status for each exit code, that the metrics are read, and that stdout that
-  is not JSON gives `error`.
+- **Run py-dcqc's test suite on the patch.** The unit tests below were
+  written but not run (see "How it was checked").
 - `matrix_content_qc` has no class here. It needs three files
   (barcodes/features/matrix), which no py-dcqc target supports yet.
 
@@ -46,4 +64,7 @@ The patch also:
 - `compute_status_with_json_metrics()` was run against those outputs. Metrics
   were loaded for pass and fail. Stdout that is not JSON gave `error`, with
   stderr kept. Metrics were not read after an error exit.
-- py-dcqc's own test suite was **not** run against the patch.
+- py-dcqc's own test suite, including the new unit tests, was **not** run
+  against the patch: its dependencies could not be installed in the
+  environment where this was written. All changed files compile, and the
+  patch applies cleanly to `DPE-1842`.

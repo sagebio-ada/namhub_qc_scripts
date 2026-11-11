@@ -169,3 +169,171 @@ index 0000000..5d5922d
 +
 +    def compute_status(self) -> TestStatus:
 +        return compute_status_with_json_metrics(self)
+diff --git a/tests/test_external_tests.py b/tests/test_external_tests.py
+index 14432f4..17cd52a 100644
+--- a/tests/test_external_tests.py
++++ b/tests/test_external_tests.py
+@@ -8,7 +8,9 @@ import pytest
+ 
+ import docker
+ from dcqc import tests
++from dcqc.target import PairedTarget
+ from dcqc.tests import BaseTest, ExternalTestMixin, Process, TestStatus
++from dcqc.tests.constants import FQ_LINT_CONTAINER, RAW_READ_QC_CONTAINER
+ 
+ 
+ def test_that_all_external_tests_inherit_from_the_mixin_first():
+@@ -519,3 +521,101 @@ class TestH5adHtanValidatorTest:
+             )
+             test_status = test.get_status()
+             assert test_status == TestStatus.FAIL
++
++
++# FqLintTest and RawReadQcTest share their command shape and their
++# compute_status() override (compute_status_with_json_metrics), so the same
++# tests run for both classes.
++JSON_METRICS_TESTS = [
++    pytest.param(tests.FqLintTest, FQ_LINT_CONTAINER, id="FqLintTest"),
++    pytest.param(tests.RawReadQcTest, RAW_READ_QC_CONTAINER, id="RawReadQcTest"),
++]
++
++
++@pytest.mark.parametrize("test_class, container", JSON_METRICS_TESTS)
++class TestJsonMetricsFastqTests:
++    @pytest.fixture(scope="function", autouse=True)
++    def setup_method(self, test_files, tmp_path):
++        files = [test_files["good_fastq"], test_files["good_compressed_fastq"]]
++        self.target = PairedTarget(files)
++        self.tmp_path = tmp_path
++
++    def get_status_for(self, test, mocker, std_out, std_err, exit_code):
++        """Give the test fake container outputs and compute its status."""
++        outputs = {
++            "std_out": self.tmp_path / "std_out.txt",
++            "std_err": self.tmp_path / "std_err.txt",
++            "exit_code": self.tmp_path / "exit_code.txt",
++        }
++        outputs["std_out"].write_text(std_out)
++        outputs["std_err"].write_text(std_err)
++        outputs["exit_code"].write_text(exit_code)
++        mocker.patch.object(test, "_find_process_outputs", return_value=outputs)
++        return test.get_status()
++
++    def test_that_the_command_runs_the_entry_file_on_both_files(
++        self, test_class, container
++    ):
++        process = test_class(self.target).generate_process()
++        assert process.container == container
++        assert process.command == (
++            "python3 /app/run.py 'fastq1.fastq' 'fastq2.fastq.gz'"
++        )
++
++    def test_that_exit_code_0_passes_and_reads_the_metrics(
++        self, test_class, container, mocker
++    ):
++        test = test_class(self.target)
++        status = self.get_status_for(test, mocker, '{"files": []}', "", "0")
++        assert status == TestStatus.PASS
++        assert test.metrics == {"files": []}
++        assert test.status_reason == ""
++
++    def test_that_exit_code_1_fails_and_reads_the_metrics_and_reason(
++        self, test_class, container, mocker
++    ):
++        test = test_class(self.target)
++        status = self.get_status_for(
++            test, mocker, '{"n_errors": 1}', "fastq1.fastq: bad record", "1"
++        )
++        assert status == TestStatus.FAIL
++        assert test.metrics == {"n_errors": 1}
++        assert test.status_reason == "fastq1.fastq: bad record"
++
++    def test_that_exit_code_2_is_an_error_and_the_metrics_are_not_read(
++        self, test_class, container, mocker
++    ):
++        test = test_class(self.target)
++        status = self.get_status_for(
++            test, mocker, '{"partial": true}', "fastq1.fastq: file not found", "2"
++        )
++        assert status == TestStatus.ERROR
++        assert test.metrics == {}
++        assert test.status_reason == "fastq1.fastq: file not found"
++
++    def test_that_stdout_that_is_not_json_is_an_error(
++        self, test_class, container, mocker
++    ):
++        test = test_class(self.target)
++        status = self.get_status_for(test, mocker, "not json", "a warning", "0")
++        assert status == TestStatus.ERROR
++        assert test.metrics == {}
++        assert test.status_reason == (
++            "Tool wrote output that is not a JSON object\na warning"
++        )
++
++    def test_that_a_json_value_that_is_not_an_object_is_an_error(
++        self, test_class, container, mocker
++    ):
++        test = test_class(self.target)
++        status = self.get_status_for(test, mocker, "[1, 2]", "", "1")
++        assert status == TestStatus.ERROR
++        assert test.status_reason == "Tool wrote output that is not a JSON object"
++
++    def test_that_empty_stdout_passes_with_no_metrics(
++        self, test_class, container, mocker
++    ):
++        test = test_class(self.target)
++        status = self.get_status_for(test, mocker, "", "", "0")
++        assert status == TestStatus.PASS
++        assert test.metrics == {}
+diff --git a/tests/test_parsers.py b/tests/test_parsers.py
+index d9f44a3..26dce52 100644
+--- a/tests/test_parsers.py
++++ b/tests/test_parsers.py
+@@ -922,8 +922,15 @@ class TestCreateSuites:
+         ]
+         manifest = write_manifest(rows)
+ 
+-        # WHEN the suites are created
+-        suites = list(CsvParser(manifest).create_suites())
++        # WHEN the suites are created, without the external tests, because
++        # only nf-dcqc can run them
++        external_tests = [
++            test.__name__
++            for test in BaseTest.list_subclasses()
++            if test.is_external_test
++        ]
++        parser = CsvParser(manifest)
++        suites = list(parser.create_suites(skipped_tests=external_tests))
+ 
+         # THEN the TXT row gives a TXTSuite, and the pair gives a FastqSuite
+         assert [type(suite) for suite in suites] == [TXTSuite, FastqSuite]
+diff --git a/tests/test_suites.py b/tests/test_suites.py
+index c318566..efdb8fd 100644
+--- a/tests/test_suites.py
++++ b/tests/test_suites.py
+@@ -10,8 +10,10 @@ from dcqc.target import BaseTarget, PairedTarget, SingleTarget
+ from dcqc.tests import (
+     BaseTest,
+     FileExtensionTest,
++    FqLintTest,
+     LibTiffInfoTest,
+     PairedFastqParityTest,
++    RawReadQcTest,
+     TestStatus,
+     TiffDateTimeTest,
+     TiffTag306DateTimeTest,
+@@ -490,3 +492,14 @@ class TestEnsureAcceptsTargetCls:
+         message = "but FileSuite for file type 'Unpaired'"
+         with pytest.raises(ValueError, match=message):
+             suite_cls.ensure_accepts_target_cls(PairedTarget, file_type, ["a", "b"])
++
++
++def test_that_the_fastq_suite_runs_fastqc_in_one_test_only():
++    """RawReadQcTest runs FastQC, so FastqSuite has no separate FastQC test."""
++    assert FastqSuite.add_tests == (
++        PairedFastqParityTest,
++        FqLintTest,
++        RawReadQcTest,
++    )
++    assert FqLintTest.target_cls is PairedTarget
++    assert RawReadQcTest.target_cls is PairedTarget
