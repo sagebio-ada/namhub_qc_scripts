@@ -20,6 +20,14 @@ usage, and a full breakdown of what it checks.
 - [`atacseq_qc_pipeline/`](atacseq_qc_pipeline/README.md) — QC for nf-core/atacseq
   output (combined metrics table, ENCODE-style metrics, IDR concordance).
 
+See [`CHECK_REUSABILITY.md`](CHECK_REUSABILITY.md) for which of
+`scrnaseq_qc_pipeline/`'s individual checks are assay-agnostic enough to
+reuse directly for ATAC-seq, whole-genome sequencing, and bulk RNA-seq —
+independent from, and worth comparing against, `rnaseq_qc_pipeline/` and
+`atacseq_qc_pipeline/` above, which take a different approach (summarizing
+already-processed nf-core/rnaseq and nf-core/atacseq output rather than
+dockerized raw-FASTQ-level checks).
+
 ## Shared code
 
 [`qc_common/`](qc_common/__init__.py) holds code meant to be reused across
@@ -33,8 +41,21 @@ pipelines (standard library only):
   FastQC, kraken2/Bracken contamination
 - `tools.py` — run fq lint and kraken2 + Bracken
 - `fastqc_zip.py` — median read length from a FastQC zip
+- `fq_lint.py` — run and parse `fq lint` output; also used directly by
+  `scrnaseq_qc_pipeline/fq_lint_qc.py` (the one piece of Tier 1 FASTQ QC
+  that's genuinely shared code today, not just a parallel reimplementation —
+  see [`CHECK_REUSABILITY.md`](CHECK_REUSABILITY.md) for the rest of that
+  picture)
 
 A pipeline script adds the repo root to `sys.path` and imports from
 `qc_common` (see `rnaseq_qc_pipeline/rnaseq_qc_metrics.py`). Assay-specific
 sections stay in the pipeline's own folder. Pipelines sit side by side, and
 code is moved into `qc_common` when a second pipeline needs it.
+
+Note: an unmerged branch for `scrnaseq_qc_pipeline/` independently started a
+similarly-named shared package (`common/`, holding a `fastq_layout.py`
+helper) — a naming collision worth resolving if/when these two efforts
+converge. (A second, unrelated `qc_common` collision — a same-named
+single-file module in `scrnaseq_qc_pipeline/` used for its py-dcqc exit-code
+contract — has already been resolved by renaming that file to
+`scrnaseq_common.py`.)

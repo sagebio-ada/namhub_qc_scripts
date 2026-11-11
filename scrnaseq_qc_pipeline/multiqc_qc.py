@@ -20,9 +20,11 @@ never a replacement for scrnaseq_qc_report.csv.
 
 from __future__ import annotations
 
+import csv
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Dict
 
 MULTIQC_INSTALL_HINT = (
     "multiqc was not found on PATH. Install it with 'pip install multiqc'. "
@@ -47,3 +49,38 @@ def run_multiqc(work_dir: Path, output_dir: Path, report_name: str = "multiqc_re
     if not report_path.exists():
         raise FileNotFoundError(f"Expected MultiQC report not found: {report_path}")
     return report_path
+
+
+def read_general_stats(output_dir: Path, report_name: str = "multiqc_report") -> Dict[str, Dict[str, object]]:
+    """Parse MultiQC's General Statistics table (the numbers at the top of
+    the HTML report) from <output_dir>/<report_name>_data/multiqc_general_stats.txt.
+
+    Returns {sample: {"<module>.<metric>": value}}, e.g.
+    {"s_R1": {"fastqc.percent_gc": 49.0, "kraken.pct_top_one": 97.1}}.
+    Numeric cells become floats; empty cells are dropped. Returns {} if the
+    table wasn't written (MultiQC found no supported tool output).
+    """
+    path = output_dir / f"{report_name}_data" / "multiqc_general_stats.txt"
+    if not path.exists():
+        return {}
+    with open(path, newline="") as fh:
+        rows = list(csv.reader(fh, delimiter="\t"))
+    if not rows:
+        return {}
+    header, stats = rows[0], {}
+    for row in rows[1:]:
+        if not row:
+            continue
+        sample_stats: Dict[str, object] = {}
+        for col, cell in zip(header[1:], row[1:]):
+            if cell == "":
+                continue
+            # Columns look like "FastQC_mqc-generalstats-fastqc-percent_gc".
+            module, _, rest = col.partition("_mqc-generalstats-")
+            key = f"{module.lower()}.{rest.rsplit('-', 1)[-1]}" if rest else col
+            try:
+                sample_stats[key] = float(cell)
+            except ValueError:
+                sample_stats[key] = cell
+        stats[row[0]] = sample_stats
+    return stats
