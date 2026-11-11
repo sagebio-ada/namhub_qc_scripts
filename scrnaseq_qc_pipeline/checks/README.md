@@ -38,7 +38,7 @@ It still accepts the three files directly, for use outside py-dcqc.
 
 The matching py-dcqc test classes (`FqLintTest`, `RawReadQcTest`,
 `MatrixContentQcTest`, the `compute_status()` override that reads the stdout
-metrics, and the `FastqSuite`/`MatrixSuite` entries) are in
+metrics, and the `FastqSuite`/`CellrangerMatrixSuite` entries) are in
 `py_dcqc_integration/`, with a patch for py-dcqc.
 
 ## Decided: `fastqc`/`kraken2_qc`/`fastq_aggregate`/`multiqc` merged into `raw_read_qc`

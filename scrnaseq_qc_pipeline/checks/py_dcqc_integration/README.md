@@ -27,9 +27,9 @@ The patch also:
 - imports the three classes in `src/dcqc/tests/__init__.py`,
 - adds `FQ_LINT_CONTAINER`, `RAW_READ_QC_CONTAINER` and
   `MATRIX_CONTENT_QC_CONTAINER` to `src/dcqc/tests/constants.py`,
-- adds a `10X-MATRIX` file type to `src/dcqc/file.py`: extensions `.tar.gz`,
+- adds a `CELLRANGER-MATRIX` file type to `src/dcqc/file.py`: extensions `.tar.gz`,
   `.tgz` and `.tar`, EDAM `format_3981` ("TAR format"),
-- adds `MatrixSuite` for `10X-MATRIX`, with `add_tests = (MatrixContentQcTest,)`
+- adds `CellrangerMatrixSuite` for `CELLRANGER-MATRIX`, with `add_tests = (MatrixContentQcTest,)`
   and the default `SingleTarget`,
 - sets `FastqSuite.add_tests` to `(PairedFastqParityTest, FqLintTest, RawReadQcTest)`.
   There is **no separate `FastqcTest`**. `RawReadQcTest` already runs FastQC,
@@ -47,7 +47,7 @@ The patch also:
   - empty stdout: pass with no metrics.
 - `tests/test_suites.py`: checks that `FastqSuite.add_tests` is exactly
   `(PairedFastqParityTest, FqLintTest, RawReadQcTest)`, and that a
-  `10X-MATRIX` file gets `MatrixSuite`.
+  `CELLRANGER-MATRIX` file gets `CellrangerMatrixSuite`.
 - `tests/test_parsers.py`: the existing "grouped FASTQ manifest gives a suite
   that runs" test now skips the external tests, as `run_pipeline` in
   `tests/test_main.py` already does. Without the skip, it would try to read
@@ -58,7 +58,7 @@ images to be published first.
 
 ## Before merging
 
-- **The `10X-MATRIX` name is a proposal.** It is the value a manifest's
+- **The `CELLRANGER-MATRIX` name is a proposal.** It is the value a manifest's
   file type column must use for a matrix archive.
 - **Image names are placeholders.** The `ghcr.io/sage-bionetworks-workflows/qc-*:0.1.0`
   values in `constants.py` must match where the images are published.

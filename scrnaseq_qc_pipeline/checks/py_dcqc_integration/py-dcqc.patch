@@ -1,19 +1,19 @@
 diff --git a/src/dcqc/file.py b/src/dcqc/file.py
-index 50ce7c4..a95665a 100644
+index 50ce7c4..b7350f2 100644
 --- a/src/dcqc/file.py
 +++ b/src/dcqc/file.py
 @@ -153,6 +153,9 @@ FileType("BAM", (".bam",), "format_2572")
  FileType("FASTQ", (".fastq", ".fastq.gz", ".fq", ".fq.gz"), "format_1930")
  FileType("HDF5", (".hdf", ".hdf5", ".h5", ".he5"), "format_3590")
  FileType("H5AD", (".h5ad",), "format_3590")
-+# A single-cell count matrix (barcodes.tsv, features.tsv, matrix.mtx) packaged
++# A CellRanger count matrix (barcodes.tsv, features.tsv, matrix.mtx) packaged
 +# as one tar archive. format_3981 is EDAM's "TAR format".
-+FileType("10X-MATRIX", (".tar.gz", ".tgz", ".tar"), "format_3981")
++FileType("CELLRANGER-MATRIX", (".tar.gz", ".tgz", ".tar"), "format_3981")
  
  
  # TODO: Leverage post-init function in dataclasses
 diff --git a/src/dcqc/suites/suites.py b/src/dcqc/suites/suites.py
-index 349f93d..4d07a60 100644
+index 349f93d..7f591b2 100644
 --- a/src/dcqc/suites/suites.py
 +++ b/src/dcqc/suites/suites.py
 @@ -65,7 +65,18 @@ class FastqSuite(FileSuite):
@@ -28,10 +28,10 @@ index 349f93d..4d07a60 100644
 +    )
 +
 +
-+class MatrixSuite(FileSuite):
-+    """Suite class for single-cell count matrices packaged as one archive."""
++class CellrangerMatrixSuite(FileSuite):
++    """Suite class for CellRanger count matrices packaged as one archive."""
 +
-+    file_type = FileType.get_file_type("10X-MATRIX")
++    file_type = FileType.get_file_type("CELLRANGER-MATRIX")
 +    add_tests = (tests.MatrixContentQcTest,)
  
  
@@ -397,7 +397,7 @@ index d9f44a3..26dce52 100644
          # THEN the TXT row gives a TXTSuite, and the pair gives a FastqSuite
          assert [type(suite) for suite in suites] == [TXTSuite, FastqSuite]
 diff --git a/tests/test_suites.py b/tests/test_suites.py
-index c318566..36075b3 100644
+index c318566..e02a97f 100644
 --- a/tests/test_suites.py
 +++ b/tests/test_suites.py
 @@ -5,13 +5,22 @@ import pytest
@@ -406,9 +406,9 @@ index c318566..36075b3 100644
  from dcqc.suites.suite_abc import SuiteABC, SuiteStatus
 -from dcqc.suites.suites import FastqSuite, FileSuite, OmeTiffSuite, TiffSuite
 +from dcqc.suites.suites import (
++    CellrangerMatrixSuite,
 +    FastqSuite,
 +    FileSuite,
-+    MatrixSuite,
 +    OmeTiffSuite,
 +    TiffSuite,
 +)
@@ -424,7 +424,7 @@ index c318566..36075b3 100644
      TestStatus,
      TiffDateTimeTest,
      TiffTag306DateTimeTest,
-@@ -490,3 +499,21 @@ class TestEnsureAcceptsTargetCls:
+@@ -490,3 +499,23 @@ class TestEnsureAcceptsTargetCls:
          message = "but FileSuite for file type 'Unpaired'"
          with pytest.raises(ValueError, match=message):
              suite_cls.ensure_accepts_target_cls(PairedTarget, file_type, ["a", "b"])
@@ -441,8 +441,10 @@ index c318566..36075b3 100644
 +    assert RawReadQcTest.target_cls is PairedTarget
 +
 +
-+def test_that_a_matrix_archive_gets_the_matrix_suite():
-+    """A 10X-MATRIX file is one archive, so its suite takes a SingleTarget."""
-+    assert SuiteABC.get_subclass_by_file_type("10X-MATRIX") is MatrixSuite
-+    assert MatrixSuite.add_tests == (MatrixContentQcTest,)
-+    assert MatrixSuite.target_cls is SingleTarget
++def test_that_a_cellranger_matrix_archive_gets_its_own_suite():
++    """A CELLRANGER-MATRIX file is one archive, so its suite takes a
++    SingleTarget."""
++    suite_cls = SuiteABC.get_subclass_by_file_type("CELLRANGER-MATRIX")
++    assert suite_cls is CellrangerMatrixSuite
++    assert CellrangerMatrixSuite.add_tests == (MatrixContentQcTest,)
++    assert CellrangerMatrixSuite.target_cls is SingleTarget
