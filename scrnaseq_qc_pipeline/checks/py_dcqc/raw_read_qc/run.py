@@ -32,8 +32,8 @@ Metrics (one JSON object on stdout): per-mate FastQC summary + modules,
 per-mate Kraken2 classification (species is reported, never pass/fail),
 the R1/R2 read-count parity, the ENA-registry aggregate comparisons
 (optional -- skipped unless --ena-metadata-json is given, which py-dcqc
-can't supply), the MultiQC report filename, and MultiQC's General
-Statistics table. The MultiQC HTML itself is only kept if nf-dcqc
+can't supply), the MultiQC report filename, and every number in the MultiQC
+report ("multiqc": all its tables and the data behind every plot). The MultiQC HTML itself is only kept if nf-dcqc
 publishes it as an output.
 
 KNOWN DEVIATION: MultiQC here only ever aggregates this one run's own 1-2
@@ -55,7 +55,7 @@ from fastq_qc import FASTQC_INSTALL_HINT, aggregate_fastq_checks, fastqc_availab
 from kraken_qc import (  # noqa: E402
     KRAKEN2_INSTALL_HINT, kraken2_available, kraken2_db_staged, kraken2_report_path, parse_kraken2_report, qc_kraken2,
 )
-from multiqc_qc import read_general_stats, run_multiqc  # noqa: E402
+from multiqc_qc import read_multiqc_data, run_multiqc  # noqa: E402
 from scrnaseq_common import DCQC_ERROR, DCQC_FAIL, DCQC_PASS, emit_dcqc_metrics, emit_dcqc_reason  # noqa: E402
 
 # Baked into this image's final stage -- see the Dockerfile.
@@ -220,10 +220,10 @@ def main() -> int:
         "aggregate": aggregate_metrics,
         "multiqc_report_file": report_path.name,
         # The HTML report itself is a file in the container's working
-        # directory; nf-dcqc has to publish it as an output to keep it. Its
-        # General Statistics table is carried here so the numbers survive
-        # even if the HTML doesn't.
-        "multiqc_general_stats": read_general_stats(Path("."), args.report_name),
+        # directory; nf-dcqc has to publish it as an output to keep it. Every
+        # number in it (all tables and the data behind every plot) is
+        # carried here, so the numbers survive even if the HTML doesn't.
+        "multiqc": read_multiqc_data(Path("."), args.report_name),
     })
 
     if module_fail_details:

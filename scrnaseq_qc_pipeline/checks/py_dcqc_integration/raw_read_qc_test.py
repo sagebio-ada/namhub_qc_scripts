@@ -15,7 +15,8 @@ class RawReadQcTest(ExternalBaseTest[PairedTarget]):
     """Runs FastQC and Kraken2 on each FASTQ file of a pair, plus MultiQC.
 
     Fails only when a FastQC module reports FAIL. Kraken2 species, R1/R2
-    read counts and MultiQC's General Statistics are reported as metrics.
+    read counts and every number in the MultiQC report (its tables and
+    plot data) are reported as metrics.
     The ENA registry comparison is skipped: it needs --ena-metadata-json,
     which py-dcqc cannot supply.
     """

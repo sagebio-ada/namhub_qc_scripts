@@ -20,7 +20,7 @@ never a replacement for scrnaseq_qc_report.csv.
 
 from __future__ import annotations
 
-import csv
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -51,36 +51,61 @@ def run_multiqc(work_dir: Path, output_dir: Path, report_name: str = "multiqc_re
     return report_path
 
 
-def read_general_stats(output_dir: Path, report_name: str = "multiqc_report") -> Dict[str, Dict[str, object]]:
-    """Parse MultiQC's General Statistics table (the numbers at the top of
-    the HTML report) from <output_dir>/<report_name>_data/multiqc_general_stats.txt.
+# Plot config keys worth keeping: they say what a plot and each of its
+# series are. Everything else in a plot's config (colors, axis limits,
+# tooltips) only affects how the HTML draws it.
+_PLOT_CONFIG_KEYS = ("id", "title", "xlab", "ylab", "data_labels")
 
-    Returns {sample: {"<module>.<metric>": value}}, e.g.
-    {"s_R1": {"fastqc.percent_gc": 49.0, "kraken.pct_top_one": 97.1}}.
-    Numeric cells become floats; empty cells are dropped. Returns {} if the
-    table wasn't written (MultiQC found no supported tool output).
+
+def _short_general_stats_key(column: str) -> str:
+    """"FastQC_mqc-generalstats-fastqc-percent_gc" -> "fastqc.percent_gc"."""
+    module, _, rest = column.partition("_mqc-generalstats-")
+    return f"{module.lower()}.{rest.rsplit('-', 1)[-1]}" if rest else column
+
+
+def _strip_colors(value):
+    """Drop "color"/"colors" keys at any depth of a plot's data."""
+    if isinstance(value, dict):
+        return {k: _strip_colors(v) for k, v in value.items() if k not in ("color", "colors")}
+    if isinstance(value, list):
+        return [_strip_colors(v) for v in value]
+    return value
+
+
+def read_multiqc_data(output_dir: Path, report_name: str = "multiqc_report") -> Dict[str, object]:
+    """Every number in the MultiQC report, from the multiqc_data.json that
+    MultiQC writes next to the HTML (<output_dir>/<report_name>_data/).
+
+    Returns {"version", "tables", "plots"}:
+      - "tables": every table MultiQC saved, as {table: {sample: {column:
+        value}}} -- e.g. the full FastQC table (multiqc_fastqc) and General
+        Statistics (multiqc_general_stats, with keys shortened to
+        "<module>.<metric>").
+      - "plots": the data behind every plot, as {plot_id: {"plot_type",
+        "datasets", "samples" (bar graphs only), "config"}}, with only the
+        config keys that label the data (_PLOT_CONFIG_KEYS) and no colors.
+    Returns {} if MultiQC wrote no data file (it found no supported tool
+    output).
     """
-    path = output_dir / f"{report_name}_data" / "multiqc_general_stats.txt"
+    path = output_dir / f"{report_name}_data" / "multiqc_data.json"
     if not path.exists():
         return {}
-    with open(path, newline="") as fh:
-        rows = list(csv.reader(fh, delimiter="\t"))
-    if not rows:
-        return {}
-    header, stats = rows[0], {}
-    for row in rows[1:]:
-        if not row:
-            continue
-        sample_stats: Dict[str, object] = {}
-        for col, cell in zip(header[1:], row[1:]):
-            if cell == "":
-                continue
-            # Columns look like "FastQC_mqc-generalstats-fastqc-percent_gc".
-            module, _, rest = col.partition("_mqc-generalstats-")
-            key = f"{module.lower()}.{rest.rsplit('-', 1)[-1]}" if rest else col
-            try:
-                sample_stats[key] = float(cell)
-            except ValueError:
-                sample_stats[key] = cell
-        stats[row[0]] = sample_stats
-    return stats
+    with open(path) as fh:
+        data = json.load(fh)
+
+    tables = dict(data.get("report_saved_raw_data", {}))
+    if "multiqc_general_stats" in tables:
+        tables["multiqc_general_stats"] = {
+            sample: {_short_general_stats_key(col): val for col, val in row.items()}
+            for sample, row in tables["multiqc_general_stats"].items()
+        }
+
+    plots = {}
+    for plot_id, plot in data.get("report_plot_data", {}).items():
+        config = plot.get("config", {})
+        plots[plot_id] = _strip_colors({
+            **{k: v for k, v in plot.items() if k != "config"},
+            "config": {k: config[k] for k in _PLOT_CONFIG_KEYS if k in config},
+        })
+
+    return {"version": data.get("config_version"), "tables": tables, "plots": plots}
