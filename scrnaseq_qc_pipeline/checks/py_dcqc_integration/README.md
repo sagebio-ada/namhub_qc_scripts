@@ -1,7 +1,7 @@
 # py-dcqc test classes for the scRNA-seq checks
 
-The py-dcqc side of `checks/py_dcqc/fq_lint`, `checks/py_dcqc/raw_read_qc`
-and `checks/py_dcqc/matrix_content_qc`.
+The py-dcqc side of `checks/py_dcqc/fq_lint`, `checks/py_dcqc/fastqc`,
+`checks/py_dcqc/kraken2_qc` and `checks/py_dcqc/matrix_content_qc`.
 These files are written to go into
 [py-dcqc](https://github.com/Sage-Bionetworks-Workflows/py-dcqc) unchanged.
 
@@ -19,25 +19,26 @@ git apply /path/to/namhub_qc_scripts/scrnaseq_qc_pipeline/checks/py_dcqc_integra
 |---|---|---|
 | `json_stdout_metrics.py` | `src/dcqc/tests/` | `compute_status_with_json_metrics()`: the `compute_status()` override from ARCHITECTURE.md ("Creating the Test Class"). It loads the container's stdout JSON into `metrics`, so the metrics reach `suites.json` and the `dcqc_metrics` CSV column. |
 | `fq_lint_test.py` | `src/dcqc/tests/` | `FqLintTest` runs `python3 /app/run.py R1 R2`. Each file is linted on its own, and the paired read-name check is not done. |
-| `raw_read_qc_test.py` | `src/dcqc/tests/` | `RawReadQcTest` runs FastQC, Kraken2 and MultiQC on the pair. |
+| `fastqc_test.py` | `src/dcqc/tests/` | `FastqcTest` runs FastQC on the pair, then MultiQC on that output. Fails on a FastQC module FAIL. |
+| `kraken2_qc_test.py` | `src/dcqc/tests/` | `Kraken2QcTest` runs Kraken2 on the pair. Metrics only: species never makes it fail. |
 | `matrix_content_qc_test.py` | `src/dcqc/tests/` | `MatrixContentQcTest` runs `python3 /app/run.py ARCHIVE` on one matrix archive. |
 
 The patch also:
 
-- imports the three classes in `src/dcqc/tests/__init__.py`,
-- adds `FQ_LINT_CONTAINER`, `RAW_READ_QC_CONTAINER` and
+- imports the four classes in `src/dcqc/tests/__init__.py`,
+- adds `FQ_LINT_CONTAINER`, `FASTQC_CONTAINER`, `KRAKEN2_QC_CONTAINER` and
   `MATRIX_CONTENT_QC_CONTAINER` to `src/dcqc/tests/constants.py`,
-- adds a `CELLRANGER-MATRIX` file type to `src/dcqc/file.py`: extensions `.tar.gz`,
+- adds a `CELLRANGER-MATRIX-TAR` file type to `src/dcqc/file.py`: extensions `.tar.gz`,
   `.tgz` and `.tar`, EDAM `format_3981` ("TAR format"),
-- adds `CellrangerMatrixSuite` for `CELLRANGER-MATRIX`, with `add_tests = (MatrixContentQcTest,)`
+- adds `CellrangerMatrixTarSuite` for `CELLRANGER-MATRIX-TAR`, with `add_tests = (MatrixContentQcTest,)`
   and the default `SingleTarget`,
-- sets `FastqSuite.add_tests` to `(PairedFastqParityTest, FqLintTest, RawReadQcTest)`.
-  There is **no separate `FastqcTest`**. `RawReadQcTest` already runs FastQC,
-  so a separate test would report the same FastQC FAIL two times.
+- sets `FastqSuite.add_tests` to
+  `(PairedFastqParityTest, FqLintTest, FastqcTest, Kraken2QcTest)`. Each
+  tool runs in one test only, so a FastQC FAIL is reported once.
 
 ### Unit tests in the patch
 
-- `tests/test_external_tests.py`: `TestJsonMetricsTests` runs for all three
+- `tests/test_external_tests.py`: `TestJsonMetricsTests` runs for all four
   classes. It checks the container and command, and the result for each
   case:
   - exit 0: pass, metrics read;
@@ -46,8 +47,8 @@ The patch also:
   - stdout that is not JSON, or JSON that is not an object: error;
   - empty stdout: pass with no metrics.
 - `tests/test_suites.py`: checks that `FastqSuite.add_tests` is exactly
-  `(PairedFastqParityTest, FqLintTest, RawReadQcTest)`, and that a
-  `CELLRANGER-MATRIX` file gets `CellrangerMatrixSuite`.
+  `(PairedFastqParityTest, FqLintTest, FastqcTest, Kraken2QcTest)`, and that a
+  `CELLRANGER-MATRIX-TAR` file gets `CellrangerMatrixTarSuite`.
 - `tests/test_parsers.py`: the existing "grouped FASTQ manifest gives a suite
   that runs" test now skips the external tests, as `run_pipeline` in
   `tests/test_main.py` already does. Without the skip, it would try to read
@@ -58,8 +59,8 @@ images to be published first.
 
 ## Before merging
 
-- **The `CELLRANGER-MATRIX` name is a proposal.** It is the value a manifest's
-  file type column must use for a matrix archive.
+- **File type name.** A manifest's file type column must use
+  `CELLRANGER-MATRIX-TAR` for a matrix archive.
 - **Image names are placeholders.** The `ghcr.io/sage-bionetworks-workflows/qc-*:0.1.0`
   values in `constants.py` must match where the images are published.
 - **Run py-dcqc's test suite on the patch.** The unit tests above were
@@ -71,16 +72,23 @@ images to be published first.
 that holds `barcodes.tsv`, `features.tsv` (or CellRanger v2's `genes.tsv`)
 and `matrix.mtx`, each gzipped or not. The files are found by name at any
 depth, so GEO's `<sample>_filtered_feature_bc_matrix.tar.gz` works as-is.
-For three loose files, `scrnaseq_qc_pipeline/package_matrix.py` builds the
-archive:
+
+The test never builds archives. That is a step before py-dcqc:
+`scrnaseq_qc_pipeline/package_matrix.py` finds every barcodes/features/matrix
+set among the file entities under a Synapse project or folder, packages each
+set, and stores each archive in Synapse as its own file entity. Each archive
+keeps the annotations its three source files share (for example `SampleId`),
+and its provenance points at those three files:
 
 ```
-python3 package_matrix.py GSM123_barcodes.tsv.gz GSM123_features.tsv.gz \
-    GSM123_matrix.mtx.gz -o GSM123_matrix.tar.gz
+SYNAPSE_AUTH_TOKEN=... python3 package_matrix.py --synapse-id syn123 \
+    -o archives/ --upload-to syn456
 ```
 
-The archive must exist as its own file, with its own Synapse ID, for
-py-dcqc to test it.
+The new entities are what the py-dcqc manifest lists, with file type
+`CELLRANGER-MATRIX-TAR`. Without `--upload-to`, the archives are only
+written to `archives/`. `--scan DIR` does the same for files already on
+disk.
 
 Exit codes: 0 pass, 1 when the archive can't be read, a member is missing
 or duplicated (for example, a raw and a filtered matrix in one archive), a
@@ -89,7 +97,7 @@ file does not exist.
 
 ## How it was checked
 
-- All three images were run with each class's command, the way nf-dcqc runs it:
+- All four images were run with each class's command, the way nf-dcqc runs it:
   `( (cmd) > std_out.txt 2> std_err.txt; echo $? > exit_code.txt ) || true`.
 - The matrix image was run on: a packaged archive, a GEO-style archive with
   a top-level folder, an uncompressed CellRanger v2 archive, and three loose

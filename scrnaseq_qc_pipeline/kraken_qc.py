@@ -59,23 +59,38 @@ def kraken2_db_staged(db_path: Path) -> bool:
     return all((db_path / f).exists() for f in _DB_MARKER_FILES)
 
 
-def download_kraken2_db(db_path: Path, url: str = _DEFAULT_DB_URL) -> None:
+def download_kraken2_db(db_path: Path, url: str = _DEFAULT_DB_URL, expected_sha256: Optional[str] = None) -> None:
     """Download and extract a Kraken2 database tarball into db_path.
 
-    Stdlib-only (urllib/tarfile) so this also works inside the minimal
-    raw_read_qc container (where it now bakes the database in at build
-    time, under Python 3.7 -- see that check's Dockerfile) without a new
-    pip dependency just for this one-time fetch. Callers should check
+    Stdlib-only (urllib/tarfile), so it needs no extra pip dependency.
+    For local runs; the kraken2_qc image bakes its database in with curl
+    and sha256sum instead (see that check's Dockerfile). Callers should check
     kraken2_db_staged() first -- this doesn't skip an already-staged
     database itself.
+
+    If expected_sha256 is given, the tarball is hashed as it downloads and
+    ValueError is raised (before anything is extracted) when it doesn't
+    match. The index site publishes no checksums, so the expected value is
+    one we computed and pinned (KRAKEN2_DB_SHA256 in kraken2_qc's
+    Dockerfile, for the default Standard-8 URL).
     """
+    import hashlib
     import tarfile
     import urllib.request
 
     db_path.mkdir(parents=True, exist_ok=True)
     tarball = db_path / "_kraken2_db_download.tar.gz"
+    digest = hashlib.sha256()
     with urllib.request.urlopen(url, timeout=60) as resp, open(tarball, "wb") as fh:
-        shutil.copyfileobj(resp, fh, length=1 << 20)
+        for chunk in iter(lambda: resp.read(1 << 20), b""):
+            digest.update(chunk)
+            fh.write(chunk)
+    if expected_sha256 and digest.hexdigest() != expected_sha256.lower():
+        tarball.unlink()
+        raise ValueError(
+            f"Kraken2 database checksum mismatch for {url}: "
+            f"expected {expected_sha256}, got {digest.hexdigest()}"
+        )
     with tarfile.open(tarball) as tar:
         tar.extractall(db_path)
     try:
@@ -119,7 +134,19 @@ def kraken2_report_path(fastq_path: Path, outdir: Path) -> Path:
     return outdir / f"{stem}.kraken2report.txt"
 
 
+class CorruptGzipError(RuntimeError):
+    """The .gz input ended early or is corrupt. Kraken2's own gzip reader
+    doesn't notice -- it classifies the reads it got and exits 0."""
+
+
 def run_kraken2(fastq_path: Path, db_path: str, outdir: Path, threads: int = 4) -> Path:
+    """Classify fastq_path with Kraken2 and return its --report path.
+
+    A .gz file is decompressed by `gzip -dc` and piped into Kraken2, so a
+    truncated or corrupt file raises CorruptGzipError (gzip's exit status)
+    instead of being classified as far as it goes. Raises
+    subprocess.CalledProcessError if Kraken2 itself fails.
+    """
     outdir.mkdir(parents=True, exist_ok=True)
     report_path = kraken2_report_path(fastq_path, outdir)
     cmd = [
@@ -127,9 +154,20 @@ def run_kraken2(fastq_path: Path, db_path: str, outdir: Path, threads: int = 4) 
         "--report", str(report_path), "--output", "/dev/null",
     ]
     if fastq_path.name.endswith(".gz"):
-        cmd.append("--gzip-compressed")
-    cmd.append(str(fastq_path))
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+        gunzip = subprocess.Popen(["gzip", "-dc", str(fastq_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            result = subprocess.run(cmd + ["/dev/stdin"], stdin=gunzip.stdout, capture_output=True, text=True)
+        finally:
+            gunzip.stdout.close()
+            gunzip_err = gunzip.stderr.read().decode(errors="replace").strip()
+            gunzip.wait()
+        if gunzip.returncode != 0:
+            # Checked first: Kraken2 may also fail on the cut-off stream.
+            raise CorruptGzipError(f"gzip could not read {fastq_path.name}: {gunzip_err[-300:]}")
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+    else:
+        subprocess.run(cmd + [str(fastq_path)], check=True, capture_output=True, text=True)
     if not report_path.exists():
         raise FileNotFoundError(f"Expected Kraken2 report not found: {report_path}")
     return report_path

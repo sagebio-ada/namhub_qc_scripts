@@ -1,5 +1,5 @@
 diff --git a/src/dcqc/file.py b/src/dcqc/file.py
-index 50ce7c4..b7350f2 100644
+index 50ce7c4..0482e67 100644
 --- a/src/dcqc/file.py
 +++ b/src/dcqc/file.py
 @@ -153,6 +153,9 @@ FileType("BAM", (".bam",), "format_2572")
@@ -8,15 +8,15 @@ index 50ce7c4..b7350f2 100644
  FileType("H5AD", (".h5ad",), "format_3590")
 +# A CellRanger count matrix (barcodes.tsv, features.tsv, matrix.mtx) packaged
 +# as one tar archive. format_3981 is EDAM's "TAR format".
-+FileType("CELLRANGER-MATRIX", (".tar.gz", ".tgz", ".tar"), "format_3981")
++FileType("CELLRANGER-MATRIX-TAR", (".tar.gz", ".tgz", ".tar"), "format_3981")
  
  
  # TODO: Leverage post-init function in dataclasses
 diff --git a/src/dcqc/suites/suites.py b/src/dcqc/suites/suites.py
-index 349f93d..7f591b2 100644
+index 349f93d..f8656cc 100644
 --- a/src/dcqc/suites/suites.py
 +++ b/src/dcqc/suites/suites.py
-@@ -65,7 +65,18 @@ class FastqSuite(FileSuite):
+@@ -65,7 +65,19 @@ class FastqSuite(FileSuite):
  
      target_cls = PairedTarget
      file_type = FileType.get_file_type("FASTQ")
@@ -24,54 +24,99 @@ index 349f93d..7f591b2 100644
 +    add_tests = (
 +        tests.PairedFastqParityTest,
 +        tests.FqLintTest,
-+        tests.RawReadQcTest,
++        tests.FastqcTest,
++        tests.Kraken2QcTest,
 +    )
 +
 +
-+class CellrangerMatrixSuite(FileSuite):
++class CellrangerMatrixTarSuite(FileSuite):
 +    """Suite class for CellRanger count matrices packaged as one archive."""
 +
-+    file_type = FileType.get_file_type("CELLRANGER-MATRIX")
++    file_type = FileType.get_file_type("CELLRANGER-MATRIX-TAR")
 +    add_tests = (tests.MatrixContentQcTest,)
  
  
  class TXTSuite(FileSuite):
 diff --git a/src/dcqc/tests/__init__.py b/src/dcqc/tests/__init__.py
-index 5e21e46..eb2ebe5 100644
+index 5e21e46..8ab43c8 100644
 --- a/src/dcqc/tests/__init__.py
 +++ b/src/dcqc/tests/__init__.py
-@@ -7,13 +7,16 @@ from dcqc.tests.base_test import (
+@@ -6,12 +6,16 @@ from dcqc.tests.base_test import (
+     TestTier,
  )
  from dcqc.tests.bioformats_info_test import BioFormatsInfoTest
++from dcqc.tests.fastqc_test import FastqcTest
  from dcqc.tests.file_extension_test import FileExtensionTest
 +from dcqc.tests.fq_lint_test import FqLintTest
  from dcqc.tests.grep_date_test import GrepDateTest
  from dcqc.tests.h5ad_htan_validator_test import H5adHtanValidatorTest
  from dcqc.tests.json_load_test import JsonLoadTest
  from dcqc.tests.jsonld_load_test import JsonLdLoadTest
++from dcqc.tests.kraken2_qc_test import Kraken2QcTest
  from dcqc.tests.libtiff_info_test import LibTiffInfoTest
 +from dcqc.tests.matrix_content_qc_test import MatrixContentQcTest
  from dcqc.tests.md5_checksum_test import Md5ChecksumTest
  from dcqc.tests.ome_xml_schema_test import OmeXmlSchemaTest
  from dcqc.tests.paired_fastq_parity_test import PairedFastqParityTest
-+from dcqc.tests.raw_read_qc_test import RawReadQcTest
- from dcqc.tests.tiff_date_time_test import TiffDateTimeTest
- from dcqc.tests.tiff_tag_306_date_time_test import TiffTag306DateTimeTest
 diff --git a/src/dcqc/tests/constants.py b/src/dcqc/tests/constants.py
-index 16c2030..11df086 100644
+index 16c2030..dabe97c 100644
 --- a/src/dcqc/tests/constants.py
 +++ b/src/dcqc/tests/constants.py
-@@ -6,5 +6,10 @@ COREUTILS_CONTAINER = "quay.io/biocontainers/coreutils:9.3"
+@@ -6,5 +6,11 @@ COREUTILS_CONTAINER = "quay.io/biocontainers/coreutils:9.3"
  HTAN_H5AD_VALIDATOR_CONTAINER = (
      "ghcr.io/sage-bionetworks-workflows/htan-h5ad-validator:0.1.1"
  )
 +FQ_LINT_CONTAINER = "ghcr.io/sage-bionetworks-workflows/qc-fq-lint:0.1.0"
-+RAW_READ_QC_CONTAINER = "ghcr.io/sage-bionetworks-workflows/qc-raw-read-qc:0.1.0"
++FASTQC_CONTAINER = "ghcr.io/sage-bionetworks-workflows/qc-fastqc:0.1.0"
++KRAKEN2_QC_CONTAINER = "ghcr.io/sage-bionetworks-workflows/qc-kraken2-qc:0.1.0"
 +MATRIX_CONTENT_QC_CONTAINER = (
 +    "ghcr.io/sage-bionetworks-workflows/qc-matrix-content-qc:0.1.0"
 +)
  LIBTIFF_CONTAINER = "quay.io/sagebionetworks/libtiff:2.0"
  TIFFTOOLS_CONTAINER = "ghcr.io/sage-bionetworks-workflows/tifftools:latest"
+diff --git a/src/dcqc/tests/fastqc_test.py b/src/dcqc/tests/fastqc_test.py
+new file mode 100644
+index 0000000..844f0e1
+--- /dev/null
++++ b/src/dcqc/tests/fastqc_test.py
+@@ -0,0 +1,37 @@
++"""Goes in py-dcqc at src/dcqc/tests/fastqc_test.py.
++
++Image: scrnaseq_qc_pipeline/checks/py_dcqc/fastqc in namhub_qc_scripts
++(FastQC + MultiQC in one container).
++"""
++
++from dcqc.target import PairedTarget
++from dcqc.tests.base_test import ExternalBaseTest, Process, TestStatus, TestTier
++from dcqc.tests.constants import FASTQC_CONTAINER
++from dcqc.tests.json_stdout_metrics import compute_status_with_json_metrics
++
++
++class FastqcTest(ExternalBaseTest[PairedTarget]):
++    """Runs FastQC on each FASTQ file of a pair, then MultiQC on that output.
++
++    Fails when a FastQC module reports FAIL or FastQC can't process a file
++    (for example, a truncated gzip). FastQC's basic statistics, each
++    module's result, the R1/R2 read counts and everything in the MultiQC
++    report (tables, plot data and each section's notes) are reported as
++    metrics, since nf-dcqc doesn't keep the HTML; a MultiQC error is a
++    metric too and never changes the result.
++    The ENA registry comparison is skipped: it needs --ena-metadata-json,
++    which py-dcqc cannot supply.
++    """
++
++    tier = TestTier.SUBJECTIVE_CONFORMANCE
++    pass_code = 0
++    fail_code = 1
++    failure_reason_location = "std_err"
++
++    def generate_process(self) -> Process:
++        paths = [file.stage() for file in self.target.files]
++        command_args = ["python3", "/app/run.py", *(f"'{path.name}'" for path in paths)]
++        return Process(container=FASTQC_CONTAINER, command_args=command_args)
++
++    def compute_status(self) -> TestStatus:
++        return compute_status_with_json_metrics(self)
 diff --git a/src/dcqc/tests/fq_lint_test.py b/src/dcqc/tests/fq_lint_test.py
 new file mode 100644
 index 0000000..1e9d6b7
@@ -155,6 +200,45 @@ index 0000000..f5a43a2
 +        return TestStatus.ERROR
 +    test.metrics = metrics
 +    return status
+diff --git a/src/dcqc/tests/kraken2_qc_test.py b/src/dcqc/tests/kraken2_qc_test.py
+new file mode 100644
+index 0000000..e3a2d53
+--- /dev/null
++++ b/src/dcqc/tests/kraken2_qc_test.py
+@@ -0,0 +1,33 @@
++"""Goes in py-dcqc at src/dcqc/tests/kraken2_qc_test.py.
++
++Image: scrnaseq_qc_pipeline/checks/py_dcqc/kraken2_qc in namhub_qc_scripts
++(Kraken2 with its Standard-8 database baked in).
++"""
++
++from dcqc.target import PairedTarget
++from dcqc.tests.base_test import ExternalBaseTest, Process, TestStatus, TestTier
++from dcqc.tests.constants import KRAKEN2_QC_CONTAINER
++from dcqc.tests.json_stdout_metrics import compute_status_with_json_metrics
++
++
++class Kraken2QcTest(ExternalBaseTest[PairedTarget]):
++    """Classifies the reads of each FASTQ file of a pair with Kraken2.
++
++    Reports only: the read count, the classified and unclassified
++    percentages and the top species are metrics, and the species never
++    makes the test fail. It fails only when Kraken2 can't process a file
++    (for example, a truncated gzip).
++    """
++
++    tier = TestTier.SUBJECTIVE_CONFORMANCE
++    pass_code = 0
++    fail_code = 1
++    failure_reason_location = "std_err"
++
++    def generate_process(self) -> Process:
++        paths = [file.stage() for file in self.target.files]
++        command_args = ["python3", "/app/run.py", *(f"'{path.name}'" for path in paths)]
++        return Process(container=KRAKEN2_QC_CONTAINER, command_args=command_args)
++
++    def compute_status(self) -> TestStatus:
++        return compute_status_with_json_metrics(self)
 diff --git a/src/dcqc/tests/matrix_content_qc_test.py b/src/dcqc/tests/matrix_content_qc_test.py
 new file mode 100644
 index 0000000..b8ef423
@@ -195,66 +279,26 @@ index 0000000..b8ef423
 +
 +    def compute_status(self) -> TestStatus:
 +        return compute_status_with_json_metrics(self)
-diff --git a/src/dcqc/tests/raw_read_qc_test.py b/src/dcqc/tests/raw_read_qc_test.py
-new file mode 100644
-index 0000000..0478756
---- /dev/null
-+++ b/src/dcqc/tests/raw_read_qc_test.py
-@@ -0,0 +1,35 @@
-+"""Goes in py-dcqc at src/dcqc/tests/raw_read_qc_test.py.
-+
-+Image: scrnaseq_qc_pipeline/checks/py_dcqc/raw_read_qc in namhub_qc_scripts
-+(FastQC + Kraken2 + MultiQC in one container). It replaces a separate
-+FastQC test, so FastqSuite must not also run one.
-+"""
-+
-+from dcqc.target import PairedTarget
-+from dcqc.tests.base_test import ExternalBaseTest, Process, TestStatus, TestTier
-+from dcqc.tests.constants import RAW_READ_QC_CONTAINER
-+from dcqc.tests.json_stdout_metrics import compute_status_with_json_metrics
-+
-+
-+class RawReadQcTest(ExternalBaseTest[PairedTarget]):
-+    """Runs FastQC and Kraken2 on each FASTQ file of a pair, plus MultiQC.
-+
-+    Fails only when a FastQC module reports FAIL. Kraken2 species, R1/R2
-+    read counts and every number in the MultiQC report (its tables and
-+    plot data) are reported as metrics.
-+    The ENA registry comparison is skipped: it needs --ena-metadata-json,
-+    which py-dcqc cannot supply.
-+    """
-+
-+    tier = TestTier.SUBJECTIVE_CONFORMANCE
-+    pass_code = 0
-+    fail_code = 1
-+    failure_reason_location = "std_err"
-+
-+    def generate_process(self) -> Process:
-+        paths = [file.stage() for file in self.target.files]
-+        command_args = ["python3", "/app/run.py", *(f"'{path.name}'" for path in paths)]
-+        return Process(container=RAW_READ_QC_CONTAINER, command_args=command_args)
-+
-+    def compute_status(self) -> TestStatus:
-+        return compute_status_with_json_metrics(self)
 diff --git a/tests/test_external_tests.py b/tests/test_external_tests.py
-index 14432f4..8968764 100644
+index 14432f4..0f0d597 100644
 --- a/tests/test_external_tests.py
 +++ b/tests/test_external_tests.py
-@@ -8,7 +8,13 @@ import pytest
+@@ -8,7 +8,14 @@ import pytest
  
  import docker
  from dcqc import tests
 +from dcqc.target import PairedTarget, SingleTarget
  from dcqc.tests import BaseTest, ExternalTestMixin, Process, TestStatus
 +from dcqc.tests.constants import (
++    FASTQC_CONTAINER,
 +    FQ_LINT_CONTAINER,
++    KRAKEN2_QC_CONTAINER,
 +    MATRIX_CONTENT_QC_CONTAINER,
-+    RAW_READ_QC_CONTAINER,
 +)
  
  
  def test_that_all_external_tests_inherit_from_the_mixin_first():
-@@ -519,3 +525,120 @@ class TestH5adHtanValidatorTest:
+@@ -519,3 +526,127 @@ class TestH5adHtanValidatorTest:
              )
              test_status = test.get_status()
              assert test_status == TestStatus.FAIL
@@ -274,11 +318,18 @@ index 14432f4..8968764 100644
 +        id="FqLintTest",
 +    ),
 +    pytest.param(
-+        tests.RawReadQcTest,
-+        RAW_READ_QC_CONTAINER,
++        tests.FastqcTest,
++        FASTQC_CONTAINER,
 +        *FASTQ_PAIR,
 +        "python3 /app/run.py 'fastq1.fastq' 'fastq2.fastq.gz'",
-+        id="RawReadQcTest",
++        id="FastqcTest",
++    ),
++    pytest.param(
++        tests.Kraken2QcTest,
++        KRAKEN2_QC_CONTAINER,
++        *FASTQ_PAIR,
++        "python3 /app/run.py 'fastq1.fastq' 'fastq2.fastq.gz'",
++        id="Kraken2QcTest",
 +    ),
 +    pytest.param(
 +        tests.MatrixContentQcTest,
@@ -398,16 +449,16 @@ index d9f44a3..26dce52 100644
          # THEN the TXT row gives a TXTSuite, and the pair gives a FastqSuite
          assert [type(suite) for suite in suites] == [TXTSuite, FastqSuite]
 diff --git a/tests/test_suites.py b/tests/test_suites.py
-index c318566..e02a97f 100644
+index c318566..44b6b30 100644
 --- a/tests/test_suites.py
 +++ b/tests/test_suites.py
-@@ -5,13 +5,22 @@ import pytest
+@@ -5,12 +5,22 @@ import pytest
  
  from dcqc.file import File, FileType
  from dcqc.suites.suite_abc import SuiteABC, SuiteStatus
 -from dcqc.suites.suites import FastqSuite, FileSuite, OmeTiffSuite, TiffSuite
 +from dcqc.suites.suites import (
-+    CellrangerMatrixSuite,
++    CellrangerMatrixTarSuite,
 +    FastqSuite,
 +    FileSuite,
 +    OmeTiffSuite,
@@ -416,36 +467,39 @@ index c318566..e02a97f 100644
  from dcqc.target import BaseTarget, PairedTarget, SingleTarget
  from dcqc.tests import (
      BaseTest,
++    FastqcTest,
      FileExtensionTest,
 +    FqLintTest,
++    Kraken2QcTest,
      LibTiffInfoTest,
 +    MatrixContentQcTest,
      PairedFastqParityTest,
-+    RawReadQcTest,
      TestStatus,
      TiffDateTimeTest,
-     TiffTag306DateTimeTest,
-@@ -490,3 +499,23 @@ class TestEnsureAcceptsTargetCls:
+@@ -490,3 +500,26 @@ class TestEnsureAcceptsTargetCls:
          message = "but FileSuite for file type 'Unpaired'"
          with pytest.raises(ValueError, match=message):
              suite_cls.ensure_accepts_target_cls(PairedTarget, file_type, ["a", "b"])
 +
 +
-+def test_that_the_fastq_suite_runs_fastqc_in_one_test_only():
-+    """RawReadQcTest runs FastQC, so FastqSuite has no separate FastQC test."""
++def test_that_the_fastq_suite_runs_each_fastq_tool_once():
++    """FastqcTest runs FastQC (and MultiQC on its output); Kraken2QcTest
++    runs Kraken2. No tool runs in two tests."""
 +    assert FastqSuite.add_tests == (
 +        PairedFastqParityTest,
 +        FqLintTest,
-+        RawReadQcTest,
++        FastqcTest,
++        Kraken2QcTest,
 +    )
 +    assert FqLintTest.target_cls is PairedTarget
-+    assert RawReadQcTest.target_cls is PairedTarget
++    assert FastqcTest.target_cls is PairedTarget
++    assert Kraken2QcTest.target_cls is PairedTarget
 +
 +
 +def test_that_a_cellranger_matrix_archive_gets_its_own_suite():
-+    """A CELLRANGER-MATRIX file is one archive, so its suite takes a
++    """A CELLRANGER-MATRIX-TAR file is one archive, so its suite takes a
 +    SingleTarget."""
-+    suite_cls = SuiteABC.get_subclass_by_file_type("CELLRANGER-MATRIX")
-+    assert suite_cls is CellrangerMatrixSuite
-+    assert CellrangerMatrixSuite.add_tests == (MatrixContentQcTest,)
-+    assert CellrangerMatrixSuite.target_cls is SingleTarget
++    suite_cls = SuiteABC.get_subclass_by_file_type("CELLRANGER-MATRIX-TAR")
++    assert suite_cls is CellrangerMatrixTarSuite
++    assert CellrangerMatrixTarSuite.add_tests == (MatrixContentQcTest,)
++    assert CellrangerMatrixTarSuite.target_cls is SingleTarget

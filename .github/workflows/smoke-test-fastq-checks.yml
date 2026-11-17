@@ -1,18 +1,23 @@
-name: Smoke test raw_read_qc (x86_64)
+name: Smoke test fastqc and kraken2_qc (x86_64)
 
-# Manual-only: this builds a ~17GB image (Kraken2's full Standard-8 database
-# baked in) and isn't meant to run on every push/PR. It exists to verify
-# scrnaseq_qc_pipeline/checks/py_dcqc/raw_read_qc on a real x86_64 host --
-# FastQC was observed hanging mid-write (never finalizing its own output
-# zip) when run under Rosetta's amd64-on-arm64 translation on Apple
-# Silicon, so this check needs confirming on genuine x86_64 hardware
+# Manual-only: kraken2_qc builds a ~17GB image (Kraken2's full Standard-8
+# database baked in) and isn't meant to run on every push/PR. It exists to
+# verify scrnaseq_qc_pipeline/checks/py_dcqc/{fastqc,kraken2_qc} on a real
+# x86_64 host -- FastQC was observed hanging mid-write (never finalizing its
+# own output zip) when run under Rosetta's amd64-on-arm64 translation on
+# Apple Silicon, so these checks need confirming on genuine x86_64 hardware
 # (GitHub-hosted ubuntu-latest runners) rather than a local Mac.
+
 on:
   workflow_dispatch:
 
 jobs:
   smoke-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [fastqc, kraken2_qc]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,11 +33,11 @@ jobs:
           echo "After cleanup:"
           df -h
 
-      - name: Build raw_read_qc image
+      - name: Build ${{ matrix.check }} image
         run: |
           docker build --platform=linux/amd64 \
-            -f scrnaseq_qc_pipeline/checks/py_dcqc/raw_read_qc/Dockerfile \
-            -t qc-raw-read-qc .
+            -f scrnaseq_qc_pipeline/checks/py_dcqc/${{ matrix.check }}/Dockerfile \
+            -t qc-check .
 
       - name: Generate synthetic test fastq
         run: |
@@ -50,10 +55,10 @@ jobs:
           EOF
           ls -la smoke_test/
 
-      - name: Run raw_read_qc smoke test
+      - name: Run ${{ matrix.check }} smoke test
         run: |
           cd smoke_test
-          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":"$PWD" -w "$PWD" qc-raw-read-qc \
+          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":"$PWD" -w "$PWD" qc-check \
             /bin/bash -c "python3 /app/run.py 'test_r1.fastq.gz' > std_out.txt 2> std_err.txt; echo \$? > exit_code.txt"
 
           EXIT_CODE="$(cat exit_code.txt 2>/dev/null || echo MISSING)"
@@ -80,5 +85,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: raw-read-qc-smoke-test-output
+          name: ${{ matrix.check }}-smoke-test-output
           path: smoke_test/

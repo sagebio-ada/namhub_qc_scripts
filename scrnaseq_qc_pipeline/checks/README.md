@@ -29,16 +29,17 @@ module was renamed from `qc_common.py` — that name now belongs to the
 repo-root `qc_common/` package shared across the other pipelines; the two
 are unrelated and were colliding in name only.)
 
-Current members: `fq_lint`, `raw_read_qc`, `matrix_content_qc`.
+Current members: `fq_lint`, `fastqc`, `kraken2_qc`, `matrix_content_qc`.
 
 `matrix_content_qc` takes one tar archive holding barcodes/features/matrix
 (GEO's `*_filtered_feature_bc_matrix.tar.gz` works as-is; for loose files,
-`../package_matrix.py` builds one), so py-dcqc can run it on a single file.
+`../package_matrix.py` builds one from Synapse file entities and uploads it, as a
+step before py-dcqc), so py-dcqc can run it on a single file.
 It still accepts the three files directly, for use outside py-dcqc.
 
-The matching py-dcqc test classes (`FqLintTest`, `RawReadQcTest`,
-`MatrixContentQcTest`, the `compute_status()` override that reads the stdout
-metrics, and the `FastqSuite`/`CellrangerMatrixSuite` entries) are in
+The matching py-dcqc test classes (`FqLintTest`, `FastqcTest`,
+`Kraken2QcTest`, `MatrixContentQcTest`, the `compute_status()` override that reads the stdout
+metrics, and the `FastqSuite`/`CellrangerMatrixTarSuite` entries) are in
 `py_dcqc_integration/`, with a patch for py-dcqc.
 
 ## Decided: `fastqc`/`kraken2_qc`/`fastq_aggregate`/`multiqc` merged into `raw_read_qc`
@@ -62,14 +63,26 @@ separate py-dcqc violation ("the tool must not download data when it
 runs") — fixed in the same merge by baking Kraken2's full Standard-8 index
 into the image at build time instead.
 
-`raw_read_qc` now does what all four used to, in one container, on 1–2
-mate fastq files (a py-dcqc SingleTarget/PairedTarget): FastQC + Kraken2
-per mate, the ENA-registry aggregate comparison across mates, and a
-MultiQC report over just this run's own FastQC/Kraken2 output (not a
-cross-sample report the way `run_scrnaseq_qc.py`'s own local driver
-produces one — a DCQC test is inherently per-target, so cross-sample
-aggregation isn't reachable from inside one). See `raw_read_qc/run.py`'s
-own docstring for the full exit-code contract.
+## Decided (2026-11-16): `raw_read_qc` split into `fastqc` and `kraken2_qc`
+
+The merged check ran Kraken2 (a 16 GB image) just to give a FastQC verdict,
+and Kraken2 only ever reports information. It is now two checks, each
+running its tools once, on 1–2 mate fastq files (a py-dcqc
+SingleTarget/PairedTarget):
+
+- **`fastqc`**: FastQC per mate, the R1/R2 read-count comparison (plus the
+  optional ENA-registry comparison), and MultiQC over that FastQC output.
+  It gives the verdict: FAIL when a FastQC module FAILs or FastQC can't
+  process a file. MultiQC stays here because it can only summarize output
+  from its own container; all its numbers go into the metrics.
+- **`kraken2_qc`**: Kraken2 per mate against the baked-in Standard-8
+  database. Metrics only: species never makes it fail. It fails only when
+  Kraken2 can't process a file.
+
+The MultiQC report no longer has a Kraken2 section. Kraken2's numbers are
+in `kraken2_qc`'s own metrics, and reports are built downstream from all
+the checks' metrics. See each check's `run.py` docstring for the full
+exit-code contract.
 
 ## `repo_scripts/` — our own scripts, our own contract
 

@@ -12,16 +12,18 @@ https://github.com/Sage-Bionetworks-Workflows/py-dcqc/pull/96):
   1: fq lint found real structural issues in at least one file -- a
      genuine tool-native verdict.
   2: the check itself could not run on at least one file (the fq binary is
-     missing or can't execute, or a file is missing/unreadable) -- not a
-     verdict about the data. Takes precedence over 1.
+     missing or can't execute, a file is missing/unreadable, or a signal
+     stopped fq) -- not a verdict about the data. Takes precedence over 1.
 
 `fq lint` itself exits 1 both for a structurally bad file and for an
 operational error (e.g. a missing file), so this script checks that each
 file exists and is readable before calling fq (missing/unreadable -> 2),
-and treats fq failing before it logs its own startup as 2 too. Once fq has
-started on a readable file, any nonzero exit is a verdict about the
-file (1) -- validator ERROR lines, or a file fq can't parse at all (e.g. a
-truncated gzip).
+and treats fq failing before it logs its own startup as 2 too, as well as
+fq being stopped by a signal (negative return code: an out-of-memory kill
+or a timeout). Otherwise, once fq has started on a readable file, a nonzero
+exit is a verdict about the file (1) -- validator ERROR lines, or a file fq
+can't parse at all (e.g. a truncated gzip, which also stops fq before its
+final summary, so "didn't finish" can't be used to mean ERROR).
 
 Metrics (one JSON object on stdout, written on exit 0 and 1):
 {"files": [{"fname", "status", "records", "n_errors", "n_warnings",
@@ -61,6 +63,10 @@ def lint_one(fastq_path: Path) -> Tuple[int, Optional[str], Optional[Dict[str, o
     errors = parsed["errors"]
     tail = "; ".join(ln.strip() for ln in text.splitlines()[-3:] if ln.strip())
 
+    if returncode < 0:
+        # A signal stopped fq (SIGKILL from an out-of-memory kill, SIGTERM
+        # from a timeout) -- says nothing about the file.
+        return DCQC_ERROR, f"{name}: fq lint was stopped by signal {-returncode}", None
     if returncode != 0 and "fq-lint start" not in text:
         # fq never got as far as logging its own startup (e.g. the binary
         # can't execute) -- the check didn't run, so this isn't a verdict.

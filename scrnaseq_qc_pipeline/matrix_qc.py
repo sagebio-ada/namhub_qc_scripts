@@ -154,6 +154,63 @@ def download_matrix_files(
     return findings, paths
 
 
+class MatrixReadError(Exception):
+    """A matrix file couldn't be read or parsed. `check` is the finding it
+    belongs to: "file_integrity" (barcodes/features) or "matrix_integrity"."""
+
+    def __init__(self, check: str, message: str):
+        super().__init__(message)
+        self.check = check
+
+
+def matrix_stats(barcodes_path: Path, features_path: Path, matrix_path: Path) -> Dict[str, object]:
+    """The numbers behind qc_matrix_content's findings, as typed values.
+
+    Raises MatrixReadError if a file can't be read or parsed. A failure
+    computing the mitochondrial fraction doesn't raise: it's reported as
+    "mito_fraction_error", since everything else already succeeded.
+    """
+    try:
+        n_barcodes = _count_lines(barcodes_path)
+        n_features = _count_lines(features_path)
+    except Exception as exc:
+        raise MatrixReadError("file_integrity", f"Could not read barcodes/features files: {exc}") from exc
+
+    try:
+        import scipy.io
+        with _open(matrix_path, "rb") as fh:
+            mat = scipy.io.mmread(fh).tocsc()
+    except Exception as exc:
+        raise MatrixReadError("matrix_integrity", f"Could not parse {matrix_path.name}: {exc}") from exc
+
+    counts_per_cell = np.asarray(mat.sum(axis=0)).ravel()
+    genes_per_cell = np.asarray((mat > 0).sum(axis=0)).ravel()
+    nonzero_counts = counts_per_cell[counts_per_cell > 0]
+    nonzero_genes = genes_per_cell[genes_per_cell > 0]
+    n_empty = int((counts_per_cell == 0).sum())
+    stats: Dict[str, object] = {
+        "n_barcodes": n_barcodes,
+        "n_features": n_features,
+        "shape": [int(mat.shape[0]), int(mat.shape[1])],
+        "nnz": int(mat.nnz),
+        "n_nonempty_barcodes": int(len(nonzero_counts)),
+        "n_empty_barcodes": n_empty,
+        "frac_empty": n_empty / max(len(counts_per_cell), 1),
+        "median_umi_per_cell": float(np.median(nonzero_counts)) if len(nonzero_counts) else 0.0,
+        "median_genes_per_cell": float(np.median(nonzero_genes)) if len(nonzero_genes) else 0.0,
+        "median_mito_fraction": None,
+    }
+    try:
+        mito_frac = _mito_fraction(features_path, mat)
+        if mito_frac is not None:
+            nz_mito = mito_frac[counts_per_cell > 0]
+            if len(nz_mito):
+                stats["median_mito_fraction"] = float(np.median(nz_mito))
+    except Exception as exc:
+        stats["mito_fraction_error"] = f"Could not compute mitochondrial fraction: {exc}"
+    return stats
+
+
 def qc_matrix_content(
     sample_id: str, barcodes_path: Path, features_path: Path, matrix_path: Path,
     cellranger_output_class: str = "",
@@ -162,60 +219,50 @@ def qc_matrix_content(
     they all operate on the same small in-memory `mat`/`counts_per_cell`, the
     matrix files here are small, and scipy.io.mmread is cheap to re-run -- so
     splitting further would only add JSON-serialization complexity for a
-    scipy sparse matrix with no clean encoding, for no real benefit."""
+    scipy sparse matrix with no clean encoding, for no real benefit. The
+    numbers come from matrix_stats()."""
     findings: List[Finding] = []
 
     def add(check: str, status: str, detail: str) -> None:
         findings.append(make_finding(sample_id, sample_id, check, status, detail))
 
     try:
-        n_barcodes = _count_lines(barcodes_path)
-        n_features = _count_lines(features_path)
-    except Exception as exc:
-        add("file_integrity", "FAIL", f"Could not read barcodes/features files: {exc}")
+        stats = matrix_stats(barcodes_path, features_path, matrix_path)
+    except MatrixReadError as exc:
+        if exc.check == "matrix_integrity":
+            # Barcodes/features were readable before the matrix failed.
+            add("file_integrity", "INFO", "barcodes/features readable")
+        add(exc.check, "FAIL", str(exc))
         return findings
+
+    n_barcodes, n_features = stats["n_barcodes"], stats["n_features"]
+    shape, nnz = tuple(stats["shape"]), stats["nnz"]
     add("file_integrity", "INFO", f"{n_barcodes} barcodes, {n_features} features readable")
-
-    try:
-        import scipy.io
-        with _open(matrix_path, "rb") as fh:
-            mat = scipy.io.mmread(fh).tocsc()
-    except Exception as exc:
-        add("matrix_integrity", "FAIL", f"Could not parse {matrix_path.name}: {exc}")
-        return findings
-    add("matrix_integrity", "INFO", f"{matrix_path.name} parsed: shape {mat.shape}, nnz={mat.nnz}")
-
+    add("matrix_integrity", "INFO", f"{matrix_path.name} parsed: shape {shape}, nnz={nnz}")
     add("matrix_dimensions", "INFO",
-        f"matrix header shape={mat.shape} vs counted (features={n_features}, barcodes={n_barcodes})")
+        f"matrix header shape={shape} vs counted (features={n_features}, barcodes={n_barcodes})")
 
-    counts_per_cell = np.asarray(mat.sum(axis=0)).ravel()
-    genes_per_cell = np.asarray((mat > 0).sum(axis=0)).ravel()
-    nonzero_counts = counts_per_cell[counts_per_cell > 0]
-    nonzero_genes = genes_per_cell[genes_per_cell > 0]
+    n_total = stats["n_empty_barcodes"] + stats["n_nonempty_barcodes"]
     # FAIL only for the completely-degenerate case (zero usable barcodes at
     # all -- there's nothing to report, not a graded judgment call).
-    add("matrix_metrics", "INFO" if len(nonzero_counts) else "FAIL",
-        f"median UMI/cell={np.median(nonzero_counts) if len(nonzero_counts) else 0:.0f}, "
-        f"median genes/cell={np.median(nonzero_genes) if len(nonzero_genes) else 0:.0f}, "
-        f"barcodes_with_zero_counts={(counts_per_cell == 0).sum()}/{len(counts_per_cell)}, nnz={mat.nnz}")
+    add("matrix_metrics", "INFO" if stats["n_nonempty_barcodes"] else "FAIL",
+        f"median UMI/cell={stats['median_umi_per_cell']:.0f}, "
+        f"median genes/cell={stats['median_genes_per_cell']:.0f}, "
+        f"barcodes_with_zero_counts={stats['n_empty_barcodes']}/{n_total}, nnz={nnz}")
 
     # No pass/fail judgment -- what fraction of empty barcodes is "expected"
     # for a raw vs. filtered matrix depends on the dataset and isn't something
     # we've validated a cutoff for. Report the fraction and the declared class
     # side by side; let whoever reads the report judge whether they agree.
-    frac_empty = (counts_per_cell == 0).sum() / max(len(counts_per_cell), 1)
     add("empty_barcode_check", "INFO",
-        f"{frac_empty:.1%} of {len(counts_per_cell)} barcodes have zero counts "
+        f"{stats['frac_empty']:.1%} of {n_total} barcodes have zero counts "
         f"(declared CellrangerOutputClass={cellranger_output_class!r})")
 
-    try:
-        mito_frac = _mito_fraction(features_path, mat)
-        if mito_frac is not None:
-            nz_mito = mito_frac[counts_per_cell > 0]
-            if len(nz_mito):
-                add("mito_fraction", "INFO", f"median mito fraction (non-empty barcodes)={np.median(nz_mito):.2%}")
-    except Exception as exc:
-        add("mito_fraction", "FAIL", f"Could not compute mitochondrial fraction: {exc}")
+    if "mito_fraction_error" in stats:
+        add("mito_fraction", "FAIL", stats["mito_fraction_error"])
+    elif stats["median_mito_fraction"] is not None:
+        add("mito_fraction", "INFO",
+            f"median mito fraction (non-empty barcodes)={stats['median_mito_fraction']:.2%}")
 
     return findings
 

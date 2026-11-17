@@ -21,10 +21,15 @@ FROM --platform=linux/amd64 debian:bookworm-slim
 WORKDIR /app
 
 ARG FQ_VERSION=0.12.0
+# The release publishes no checksum, so this is the SHA-256 of the tarball
+# as downloaded on 2026-11-16. The build fails if the asset ever changes.
+# Update it together with FQ_VERSION.
+ARG FQ_SHA256=4f1ed876a5dca2c5f357f4f920928247a28150c255dfe12439058902f588a1f4
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates python3 procps && \
     rm -rf /var/lib/apt/lists/* && \
     curl -fsSL -o /tmp/fq.tar.gz \
       "https://github.com/stjude-rust-labs/fq/releases/download/v${FQ_VERSION}/fq-${FQ_VERSION}-x86_64-unknown-linux-gnu.tar.gz" && \
+    echo "${FQ_SHA256}  /tmp/fq.tar.gz" | sha256sum -c - && \
     tar -xzf /tmp/fq.tar.gz -C /tmp && \
     mv /tmp/fq-${FQ_VERSION}-x86_64-unknown-linux-gnu/fq /usr/local/bin/fq && \
     chmod +x /usr/local/bin/fq && \

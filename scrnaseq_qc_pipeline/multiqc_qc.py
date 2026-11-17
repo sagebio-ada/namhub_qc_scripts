@@ -20,7 +20,9 @@ never a replacement for scrnaseq_qc_report.csv.
 
 from __future__ import annotations
 
+import html
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -72,18 +74,80 @@ def _strip_colors(value):
     return value
 
 
-def read_multiqc_data(output_dir: Path, report_name: str = "multiqc_report") -> Dict[str, object]:
-    """Every number in the MultiQC report, from the multiqc_data.json that
-    MultiQC writes next to the HTML (<output_dir>/<report_name>_data/).
+_SECTION_RE = re.compile(r'<div class="mqc-section mqc-section-[^"]*">(.*?)(?=<div class="mqc-section mqc-section-|</body>)', re.S)
+# Data blocks the HTML embeds outside the section that draws them, and the
+# section each one belongs to.
+_HTML_BLOCK_SECTIONS = {
+    "fastqc_seq_content": "fastqc_per_base_sequence_content",
+    "fastqc_passfails": "fastqc_status_checks",
+}
+_HTML_JSON_RE = re.compile(r'<script type="application/json" class="([^"]+)">(.*?)</script>', re.S)
 
-    Returns {"version", "tables", "plots"}:
+
+def _html_text(fragment: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", fragment))).strip()
+
+
+def read_html_data(html_path: Path) -> Dict[str, object]:
+    """Data that only the HTML report holds, not multiqc_data.json:
+      - every JSON block a module embeds in the page, by its class -- e.g.
+        FastQC's per-base sequence content heatmap (fastqc_seq_content) and
+        its per-module status (fastqc_passfails). A [module, data] block is
+        stored as its data.
+      - every report section, in order: {"id", "title", "data" (the ids of
+        the plots/blocks it draws), "notes" (the messages it shows instead
+        of, or next to, a plot -- e.g. "All samples have sequences of a
+        single length (150bp)." or "No samples found with any adapter
+        contamination > 0.1%")}.
+    """
+    text = html_path.read_text(errors="replace")
+    blocks: Dict[str, object] = {}
+    for cls, body in _HTML_JSON_RE.findall(text):
+        try:
+            value = json.loads(body)
+        except ValueError:
+            continue
+        if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str):
+            value = value[1]
+        blocks[cls] = value
+
+    sections = []
+    for body in _SECTION_RE.findall(text):
+        heading = re.search(r'<h3 id="([^"]+)">(.*?)</h3>', body, re.S)
+        if not heading:
+            continue
+        section_id, title_html = heading.groups()
+        title = _html_text(re.sub(r"<button.*?</button>", "", title_html, flags=re.S))
+        ids = re.findall(r'\bid="([^"]+)"', body)
+        notes = [_html_text(n) for n in re.findall(r'<div class="alert[^"]*">(.*?)</div>', body, re.S)]
+        # Drop instructions for the interactive page ("Click a sample row ...").
+        notes = [n for n in notes if not n.startswith("Click ")]
+        sections.append({"id": section_id, "title": title, "plot_ids": ids, "notes": notes})
+    return {"blocks": blocks, "sections": sections}
+
+
+def read_multiqc_data(output_dir: Path, report_name: str = "multiqc_report") -> Dict[str, object]:
+    """Everything in the MultiQC report, as data: what MultiQC writes to
+    <output_dir>/<report_name>_data/multiqc_data.json, plus what only the
+    HTML (<output_dir>/<report_name>.html) holds.
+
+    Returns {"version", "tables", "general_stats_headers", "plots",
+    "html_data", "sections"}:
       - "tables": every table MultiQC saved, as {table: {sample: {column:
         value}}} -- e.g. the full FastQC table (multiqc_fastqc) and General
         Statistics (multiqc_general_stats, with keys shortened to
         "<module>.<metric>").
+      - "general_stats_headers": what each General Statistics column is
+        ({key: {"title", "description", "suffix"}}).
       - "plots": the data behind every plot, as {plot_id: {"plot_type",
         "datasets", "samples" (bar graphs only), "config"}}, with only the
         config keys that label the data (_PLOT_CONFIG_KEYS) and no colors.
+      - "html_data": data embedded only in the HTML, e.g. FastQC's per-base
+        sequence content (see read_html_data).
+      - "sections": every section of the report, in order, with the plot
+        or data ids it shows and any note it shows instead (see
+        read_html_data), so a section with nothing to plot (e.g. no adapter
+        contamination found) is still recorded.
     Returns {} if MultiQC wrote no data file (it found no supported tool
     output).
     """
@@ -100,6 +164,15 @@ def read_multiqc_data(output_dir: Path, report_name: str = "multiqc_report") -> 
             for sample, row in tables["multiqc_general_stats"].items()
         }
 
+    general_stats_headers = {}
+    for module_headers in data.get("report_general_stats_headers", []):
+        for column, header in module_headers.items():
+            # Same "<module>.<metric>" keys as the General Statistics table.
+            key = f"{str(header.get('namespace', '')).lower()}.{column}" if header.get("namespace") else column
+            general_stats_headers[key] = {
+                k: header[k] for k in ("title", "description", "suffix") if header.get(k) not in (None, "")
+            }
+
     plots = {}
     for plot_id, plot in data.get("report_plot_data", {}).items():
         config = plot.get("config", {})
@@ -108,4 +181,27 @@ def read_multiqc_data(output_dir: Path, report_name: str = "multiqc_report") -> 
             "config": {k: config[k] for k in _PLOT_CONFIG_KEYS if k in config},
         })
 
-    return {"version": data.get("config_version"), "tables": tables, "plots": plots}
+    html_data: Dict[str, object] = {}
+    sections = []
+    html_path = output_dir / f"{report_name}.html"
+    if html_path.exists():
+        from_html = read_html_data(html_path)
+        html_data = from_html["blocks"]
+        known = set(plots) | set(html_data)
+        for section in from_html["sections"]:
+            # Keep only ids that name data in these metrics (plots, html
+            # blocks), not the page's layout ids.
+            section["data"] = [i for i in section.pop("plot_ids") if i in known] + [
+                block for block, owner in _HTML_BLOCK_SECTIONS.items()
+                if owner == section["id"] and block in html_data
+            ]
+            sections.append(section)
+
+    return {
+        "version": data.get("config_version"),
+        "tables": tables,
+        "general_stats_headers": general_stats_headers,
+        "plots": plots,
+        "html_data": html_data,
+        "sections": sections,
+    }

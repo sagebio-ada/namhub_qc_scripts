@@ -115,6 +115,12 @@ def sanitize_capped_download(path: Path) -> None:
         fh.writelines(lines[:complete])
 
 
+class FastqcInterrupted(RuntimeError):
+    """FastQC was stopped from outside (a signal or the timeout) before it
+    finished -- says nothing about the file, unlike FastQC exiting nonzero
+    on its own."""
+
+
 def run_fastqc(
     fastq_path: Path, outdir: Path, timeout: int = 1800, poll_interval: float = 0.5
 ) -> Path:
@@ -173,8 +179,15 @@ def run_fastqc(
     if proc.poll() is None:
         proc.kill()
         proc.wait()
+        if not zip_is_complete():
+            raise FastqcInterrupted(f"FastQC did not finish within {timeout}s")
+    elif proc.returncode < 0:
+        raise FastqcInterrupted(f"FastQC was stopped by signal {-proc.returncode}")
     elif proc.returncode != 0:
         log_tail = log_path.read_text(errors="replace")[-2000:] if log_path.exists() else ""
+        if "OutOfMemoryError" in log_tail:
+            # Java ran out of memory: a resource limit, not a bad file.
+            raise FastqcInterrupted(f"FastQC ran out of memory: {log_tail[-500:]}")
         raise RuntimeError(f"fastqc exited {proc.returncode}: {log_tail}")
 
     if not zip_is_complete():
@@ -404,6 +417,29 @@ def download_from_synapse(
     return findings, Path(ent.path)
 
 
+def overrepresented_sequences(module_lines: Dict[str, List[str]]) -> List[dict]:
+    """FastQC's overrepresented-sequence list (from parse_fastqc_data's
+    module_lines), as [{"sequence", "count", "pct", "possible_source"}],
+    in FastQC's order (most common first). FastQC lists sequences making up
+    more than 0.1% of reads, using the first 50 bp of each read. MultiQC's
+    report has only their total percentage, not this list."""
+    rows = []
+    for line in module_lines.get("Overrepresented sequences", []):
+        if line.startswith("#") or not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 4:
+            continue
+        try:
+            rows.append({
+                "sequence": parts[0], "count": int(parts[1]), "pct": float(parts[2]),
+                "possible_source": parts[3],
+            })
+        except ValueError:
+            continue
+    return rows
+
+
 def run_fastqc_and_summarize(
     entity_id: str, entity_name: str, fastq_path: Path, outdir: Path, label: Optional[str] = None,
 ) -> "tuple[List[Finding], Optional[dict]]":
@@ -414,6 +450,19 @@ def run_fastqc_and_summarize(
     it, matching each caller's original message text exactly. Returns a small
     summary dict (the `fastqc_summary.json` artifact) for aggregate_fastq_checks,
     or None if FastQC itself failed."""
+    prefix = f"{label}: " if label is not None else ""
+    try:
+        data_txt = run_fastqc(fastq_path, outdir)
+    except Exception as exc:
+        return [make_finding(entity_id, entity_name, "fastqc", "FAIL", f"{prefix}FastQC failed: {exc}")], None
+    return summarize_fastqc_data(entity_id, entity_name, fastq_path, data_txt, label=label)
+
+
+def summarize_fastqc_data(
+    entity_id: str, entity_name: str, fastq_path: Path, data_txt: Path, label: Optional[str] = None,
+) -> "tuple[List[Finding], dict]":
+    """The findings and summary of run_fastqc_and_summarize, from a
+    fastqc_data.txt that run_fastqc already wrote."""
     findings: List[Finding] = []
 
     def add(check: str, status: str, detail: str) -> None:
@@ -422,12 +471,6 @@ def run_fastqc_and_summarize(
     fname = fastq_path.name
     prefix = f"{label}: " if label is not None else ""
     module_label = label if label is not None else entity_name
-
-    try:
-        data_txt = run_fastqc(fastq_path, outdir)
-    except Exception as exc:
-        add("fastqc", "FAIL", f"{prefix}FastQC failed: {exc}")
-        return findings, None
 
     parsed = parse_fastqc_data(data_txt)
     basic = parsed["basic_statistics"]

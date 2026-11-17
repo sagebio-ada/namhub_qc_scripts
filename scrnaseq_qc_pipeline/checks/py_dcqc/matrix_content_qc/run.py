@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """CellRanger matrix content QC (file_integrity through mito_fraction).
-Wraps matrix_qc.qc_matrix_content() -- kept fused since these all operate on
+Wraps matrix_qc.matrix_stats() (the numbers behind qc_matrix_content()) -- kept fused since these all operate on
 the same small in-memory scipy sparse matrix, which is cheap to re-parse and
 has no clean cross-container serialization.
 
@@ -17,9 +17,13 @@ https://github.com/Sage-Bionetworks-Workflows/py-dcqc/pull/96):
      non-fatal (noted in the metrics, not an error) since the core
      integrity/dimensions/count checks already succeeded by that point.
 
-Metrics (one JSON object on stdout): parsed shape, barcode/feature counts,
-median UMI/genes per cell, empty-barcode fraction, median mito fraction
-(if computable).
+Metrics (one JSON object on stdout), all numbers: n_barcodes, n_features
+(lines in each file), shape [features, barcodes] and nnz from the matrix
+header, n_nonempty_barcodes, n_empty_barcodes, frac_empty,
+median_umi_per_cell, median_genes_per_cell (over non-empty barcodes),
+median_mito_fraction (null if there are no MT- genes), plus
+mito_fraction_error (only when that computation failed) and
+cellranger_output_class (when given).
 
 Input: either
   - ONE tar archive (.tar.gz/.tgz/.tar) holding barcodes.tsv[.gz],
@@ -45,7 +49,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
-from matrix_qc import extract_matrix_archive, qc_matrix_content  # noqa: E402
+from matrix_qc import MatrixReadError, extract_matrix_archive, matrix_stats  # noqa: E402
 from scrnaseq_common import DCQC_ERROR, DCQC_FAIL, DCQC_PASS, emit_dcqc_metrics, emit_dcqc_reason  # noqa: E402
 
 
@@ -77,36 +81,27 @@ def main() -> int:
         else:
             barcodes, features, matrix = paths
             sample_id = matrix.name
-        findings = qc_matrix_content(
-            sample_id, barcodes, features, matrix,
-            cellranger_output_class=args.cellranger_output_class,
-        )
-    by_check = {f["check"]: f for f in findings}
-
-    for check in ("file_integrity", "matrix_integrity"):
-        if check in by_check and by_check[check]["status"] == "FAIL":
+        try:
+            stats = matrix_stats(barcodes, features, matrix)
+        except MatrixReadError as exc:
             # The files exist (checked above), so unreadable contents mean
             # a bad file, not a check that couldn't run. py-dcqc doesn't
             # read metrics after an error, but does after a fail, so write
             # an empty metrics object to keep stdout valid JSON.
             emit_dcqc_metrics({})
-            emit_dcqc_reason(by_check[check]["metric"])
+            emit_dcqc_reason(f"{sample_id}: {exc}")
             return DCQC_FAIL
 
-    metrics = {
-        "matrix_integrity": by_check.get("matrix_integrity", {}).get("metric"),
-        "matrix_dimensions": by_check.get("matrix_dimensions", {}).get("metric"),
-        "matrix_metrics": by_check.get("matrix_metrics", {}).get("metric"),
-        "empty_barcode_check": by_check.get("empty_barcode_check", {}).get("metric"),
-    }
-    if "mito_fraction" in by_check:
-        metrics["mito_fraction"] = by_check["mito_fraction"]["metric"]
-    emit_dcqc_metrics(metrics)
+    if args.cellranger_output_class:
+        stats["cellranger_output_class"] = args.cellranger_output_class
+    emit_dcqc_metrics(stats)
 
-    if by_check.get("matrix_metrics", {}).get("status") == "FAIL":
+    if not stats["n_nonempty_barcodes"]:
         # Completely degenerate (zero non-empty barcodes) -- a real
         # tool-native verdict, not a crash.
-        emit_dcqc_reason(by_check["matrix_metrics"]["metric"])
+        emit_dcqc_reason(
+            f"{sample_id}: no barcode has any counts ({stats['n_empty_barcodes']} barcodes, nnz={stats['nnz']})"
+        )
         return DCQC_FAIL
 
     return DCQC_PASS
