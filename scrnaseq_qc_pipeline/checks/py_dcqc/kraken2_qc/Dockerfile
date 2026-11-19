@@ -10,7 +10,17 @@
 #
 # Kraken2 and Python from one micromamba environment -- one package
 # manager, no files copied between base images.
-FROM --platform=linux/amd64 mambaorg/micromamba:1.5.10-bookworm-slim
+# Pinned for reproducible rebuilds: the base image by digest, and every
+# conda package (with its dependencies) by exact build and md5 in
+# conda-linux-64.lock. apt packages come from Debian stable, which only
+# takes security fixes; they aren't version-pinned because Debian removes
+# superseded versions, which would break the build.
+#
+# To change a package: build without the lock and regenerate it with
+#   docker run --rm --entrypoint micromamba IMAGE env export -n base --explicit --md5
+# Spec the lock was made from: python=3.10 kraken2=2.1.3
+#   (channels: conda-forge, bioconda)
+FROM --platform=linux/amd64 mambaorg/micromamba:1.5.10-bookworm-slim@sha256:e3797091302382ea841498bc93a7b0a50f7c1448333d5e946d2d1608d0c5f43d
 
 USER root
 # procps: Nextflow's task metrics run `ps` inside the container. curl:
@@ -18,25 +28,11 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends procps curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-RUN micromamba install -y -n base -c conda-forge -c bioconda python=3.10 kraken2=2.1.3 && \
-    micromamba clean -a -y && \
-    chmod -R a+rX /opt/conda
-
-# The base image's ENTRYPOINT activates the environment; nf-dcqc supplies
-# the full command, so clear it and put the environment on PATH instead.
-ENTRYPOINT []
-ENV PATH=/opt/conda/bin:${PATH}
-
-# nf-dcqc runs the container as the user who runs the workflow, not as root,
-# and that user has no home directory in the image.
-ENV HOME=/tmp
-ENV PYTHONDONTWRITEBYTECODE=1
-WORKDIR /app
-
 # py-dcqc tests must not download data when they run, so Kraken2's
 # "Standard-8" index (~6GB compressed) is baked in at build time. This layer
 # depends only on the two ARGs below, not on any code in this repo, so
-# editing the Python files never forces a re-download.
+# editing the Python files or the conda lock never forces a re-download
+# (it comes before both).
 # The index site publishes no checksums, so KRAKEN2_DB_SHA256 is the
 # SHA-256 of the tarball as downloaded on 2026-11-16 (two separate
 # downloads agreed); the build fails if the file at that URL ever changes.
@@ -62,6 +58,23 @@ RUN bash -euo pipefail -c ' \
       fi ; \
       test -f /opt/kraken2-db/hash.k2d -a -f /opt/kraken2-db/opts.k2d -a -f /opt/kraken2-db/taxo.k2d ; \
       chmod -R a+rX /opt/kraken2-db'
+
+COPY scrnaseq_qc_pipeline/checks/py_dcqc/kraken2_qc/conda-linux-64.lock /tmp/conda-linux-64.lock
+RUN micromamba install -y -n base -f /tmp/conda-linux-64.lock && \
+    micromamba clean -a -y && \
+    rm /tmp/conda-linux-64.lock && \
+    chmod -R a+rX /opt/conda
+
+# The base image's ENTRYPOINT activates the environment; nf-dcqc supplies
+# the full command, so clear it and put the environment on PATH instead.
+ENTRYPOINT []
+ENV PATH=/opt/conda/bin:${PATH}
+
+# nf-dcqc runs the container as the user who runs the workflow, not as root,
+# and that user has no home directory in the image.
+ENV HOME=/tmp
+ENV PYTHONDONTWRITEBYTECODE=1
+WORKDIR /app
 
 COPY scrnaseq_qc_pipeline/scrnaseq_common.py scrnaseq_qc_pipeline/kraken_qc.py /app/
 COPY scrnaseq_qc_pipeline/checks/py_dcqc/kraken2_qc/run.py /app/run.py

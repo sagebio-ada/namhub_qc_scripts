@@ -21,17 +21,29 @@
 # FastQC needs a real font to draw its plots. Without one its background
 # thread crashes, it never finishes its output zip, and the run hangs until
 # run_fastqc's timeout -- hence fontconfig + a DejaVu font.
-FROM --platform=linux/amd64 mambaorg/micromamba:1.5.10-bookworm-slim
+# Pinned for reproducible rebuilds: the base image by digest, and every
+# conda package (with its dependencies) by exact build and md5 in
+# conda-linux-64.lock. apt packages come from Debian stable, which only
+# takes security fixes; they aren't version-pinned because Debian removes
+# superseded versions, which would break the build.
+#
+# To change a package: edit the spec in the comment below, build without the
+# lock, and regenerate it with
+#   docker run --rm --entrypoint micromamba IMAGE env export -n base --explicit --md5
+# Spec the lock was made from:
+#   python=3.10 fastqc=0.12.1 multiqc=1.14 "setuptools<70" "numpy<2" requests
+#   fontconfig font-ttf-dejavu-sans-mono  (channels: conda-forge, bioconda)
+FROM --platform=linux/amd64 mambaorg/micromamba:1.5.10-bookworm-slim@sha256:e3797091302382ea841498bc93a7b0a50f7c1448333d5e946d2d1608d0c5f43d
 
 USER root
 # procps: Nextflow's task metrics run `ps` inside the container.
 RUN apt-get update && apt-get install -y --no-install-recommends procps && \
     rm -rf /var/lib/apt/lists/*
 
-RUN micromamba install -y -n base -c conda-forge -c bioconda \
-      python=3.10 fastqc=0.12.1 multiqc=1.14 "setuptools<70" "numpy<2" requests \
-      fontconfig font-ttf-dejavu-sans-mono && \
+COPY scrnaseq_qc_pipeline/checks/py_dcqc/fastqc/conda-linux-64.lock /tmp/conda-linux-64.lock
+RUN micromamba install -y -n base -f /tmp/conda-linux-64.lock && \
     micromamba clean -a -y && \
+    rm /tmp/conda-linux-64.lock && \
     chmod -R a+rX /opt/conda
 
 # The base image's ENTRYPOINT activates the environment; nf-dcqc supplies

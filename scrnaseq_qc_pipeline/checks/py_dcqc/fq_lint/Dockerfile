@@ -17,7 +17,11 @@
 # Pinned to amd64: the fq binary fetched below is x86_64-only, so an
 # unpinned build on an arm64 host (Apple Silicon) gets an arm64 base the
 # binary can't execute in.
-FROM --platform=linux/amd64 debian:bookworm-slim
+# The base image is pinned by digest for reproducible rebuilds. apt packages
+# come from Debian stable, which only takes security fixes; they aren't
+# version-pinned because Debian removes superseded versions, which would
+# break the build.
+FROM --platform=linux/amd64 debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 WORKDIR /app
 
 ARG FQ_VERSION=0.12.0
