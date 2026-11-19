@@ -8,12 +8,11 @@ Expected ctx keys:
   fastqc_id   optional, sample -> the id the FastQC tables use (default: the sample name itself);
               for libraries whose FastQC rows are named differently from the sample
 """
-import re
 import sys
 
+from .fq_lint import parse_fq_lint_output
 from .util import pct, read_table, to_num
 
-ANSI = re.compile(r"\x1b\[[0-9;]*m")
 FASTQC_MODULES = [
     "basic_statistics", "per_base_sequence_quality", "per_sequence_quality_scores",
     "per_base_sequence_content", "per_sequence_gc_content", "per_base_n_content",
@@ -32,13 +31,12 @@ def fq_lint(ctx, sample):
         if not path.exists():  # e.g. no trimmed FASTQs saved: leave this stage blank
             print(f"WARNING [{sample}] fq_lint: missing {path}", file=sys.stderr)
             continue
-        text = ANSI.sub("", path.read_text())
-        issues = [ln for ln in text.splitlines() if re.search(r"\b(ERROR|WARN)\b", ln)]
-        recs = re.findall(r"read (\d+)(?: \* \d+)? records", text)
+        parsed = parse_fq_lint_output(path.read_text())
+        n_issues = len(parsed["errors"]) + len(parsed["warnings"])
         row[f"fq_lint_{stage}_status"] = (
-            "fail" if issues else "pass" if "fq-lint end" in text else "incomplete")
-        row[f"fq_lint_{stage}_records"] = int(recs[-1]) if recs else ""
-        row[f"fq_lint_{stage}_issues"] = len(issues)
+            "fail" if n_issues else "pass" if parsed["completed"] else "incomplete")
+        row[f"fq_lint_{stage}_records"] = parsed["records"] if parsed["records"] is not None else ""
+        row[f"fq_lint_{stage}_issues"] = n_issues
     return row
 
 

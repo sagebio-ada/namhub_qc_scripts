@@ -3,25 +3,94 @@
 from __future__ import annotations
 
 import gzip
+import tarfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import IO, Dict, List, Optional
 
 import numpy as np
 
-from qc_common import Finding, make_finding
+from scrnaseq_common import Finding, make_finding
 
 REQUIRED_ROLES = {"barcodes", "features", "matrix"}
 
 
-def _count_gz_lines(path: Path) -> int:
-    with gzip.open(path, "rt") as fh:
+def _open(path: Path, mode: str = "rt") -> IO:
+    """Open a matrix file, gzipped (.gz) or not."""
+    return gzip.open(path, mode) if path.name.endswith(".gz") else open(path, mode)
+
+
+def _count_lines(path: Path) -> int:
+    with _open(path) as fh:
         return sum(1 for _ in fh)
+
+
+# Member names accepted for each role, with or without .gz. genes.tsv is
+# the CellRanger v2 name for features.tsv.
+ARCHIVE_ROLE_NAMES = {
+    "barcodes": ("barcodes.tsv",),
+    "features": ("features.tsv", "genes.tsv"),
+    "matrix": ("matrix.mtx",),
+}
+
+
+def _archive_role(member_name: str) -> Optional[str]:
+    base = Path(member_name).name
+    if base.endswith(".gz"):
+        base = base[: -len(".gz")]
+    return next((role for role, names in ARCHIVE_ROLE_NAMES.items() if base in names), None)
+
+
+def extract_matrix_archive(archive_path: Path, dest_dir: Path) -> Dict[str, Path]:
+    """Extract barcodes/features/matrix from a tar archive (e.g. GEO's
+    <sample>_filtered_feature_bc_matrix.tar.gz) into dest_dir.
+
+    Members are found by file name at any depth, so a top-level folder
+    inside the archive is fine. Only those three regular files are
+    extracted, each flattened into dest_dir, so a member path can never
+    write outside it.
+
+    Raises ValueError if a role is missing or appears more than once (for
+    example, both a raw and a filtered matrix in one archive), and
+    tarfile.TarError if the archive can't be read.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive_path, "r:*") as tar:
+        found: Dict[str, List[tarfile.TarInfo]] = {role: [] for role in ARCHIVE_ROLE_NAMES}
+        for member in tar.getmembers():
+            role = _archive_role(member.name) if member.isfile() else None
+            if role:
+                found[role].append(member)
+
+        missing = sorted(role for role, members in found.items() if not members)
+        duplicated = sorted(role for role, members in found.items() if len(members) > 1)
+        if missing or duplicated:
+            problems = []
+            if missing:
+                problems.append(f"missing {missing}")
+            if duplicated:
+                problems.append(
+                    "more than one file for "
+                    + ", ".join(f"{r} ({', '.join(m.name for m in found[r])})" for r in duplicated)
+                )
+            raise ValueError("; ".join(problems))
+
+        paths: Dict[str, Path] = {}
+        for role, (member,) in found.items():
+            out = dest_dir / Path(member.name).name
+            with tar.extractfile(member) as src, open(out, "wb") as dst:
+                while True:
+                    chunk = src.read(1 << 20)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+            paths[role] = out
+    return paths
 
 
 def _mito_fraction(features_path: Path, matrix) -> Optional[np.ndarray]:
     """Fraction of counts per cell coming from MT- genes, or None if none found."""
     mito_rows = []
-    with gzip.open(features_path, "rt") as fh:
+    with _open(features_path) as fh:
         for i, line in enumerate(fh):
             parts = line.rstrip("\n").split("\t")
             symbol = parts[1] if len(parts) > 1 else parts[0]
@@ -35,13 +104,17 @@ def _mito_fraction(features_path: Path, matrix) -> Optional[np.ndarray]:
         return np.where(total > 0, mito / total, 0.0)
 
 
-def qc_processed_sample(
-    syn,
-    sample_id: str,
-    files: Dict[str, str],
-    work_dir: Path,
-    cellranger_output_class: str = "",
-) -> List[Finding]:
+# --- Composable pieces -------------------------------------------------
+#
+# check_processed_completeness -> download_matrix_files -> qc_matrix_content,
+# each a standalone, dockerizable unit; qc_processed_sample below is just the
+# orchestrator chaining them in order (same short-circuit behavior as before
+# the refactor). See checks/*/run.py for the one-per-function CLI+Dockerfile
+# wrappers.
+
+
+def check_processed_completeness(sample_id: str, files: Dict[str, str]) -> "tuple[List[Finding], bool]":
+    """Do we have all 3 required roles' Synapse entity IDs for this sample?"""
     findings: List[Finding] = []
 
     def add(check: str, status: str, detail: str) -> None:
@@ -52,9 +125,20 @@ def qc_processed_sample(
         # A genuine blocker, not a judgment call -- nothing downstream can
         # run without these files.
         add("processed_completeness", "FAIL", f"Missing role(s) {sorted(missing)} for sample {sample_id}")
-        return findings
+        return findings, False
     present = ", ".join(f"{role}={entity_id}" for role, entity_id in sorted(files.items()))
     add("processed_completeness", "INFO", f"barcodes/features/matrix all present: {present}")
+    return findings, True
+
+
+def download_matrix_files(
+    syn, sample_id: str, files: Dict[str, str], work_dir: Path,
+) -> "tuple[List[Finding], Dict[str, Path]]":
+    """Download the barcodes/features/matrix files for one sample from Synapse."""
+    findings: List[Finding] = []
+
+    def add(check: str, status: str, detail: str) -> None:
+        findings.append(make_finding(sample_id, sample_id, check, status, detail))
 
     sample_dir = work_dir / sample_id
     sample_dir.mkdir(parents=True, exist_ok=True)
@@ -67,57 +151,142 @@ def qc_processed_sample(
             add(f"download:{role}", "INFO", f"{entity_id} ({ent.name}): downloaded {size / 1e6:.1f} MB")
         except Exception as exc:
             add(f"download:{role}", "FAIL", f"{entity_id}: {exc}")
-    if len(paths) < 3:
-        return findings
+    return findings, paths
 
+
+class MatrixReadError(Exception):
+    """A matrix file couldn't be read or parsed. `check` is the finding it
+    belongs to: "file_integrity" (barcodes/features) or "matrix_integrity"."""
+
+    def __init__(self, check: str, message: str):
+        super().__init__(message)
+        self.check = check
+
+
+def matrix_stats(barcodes_path: Path, features_path: Path, matrix_path: Path) -> Dict[str, object]:
+    """The numbers behind qc_matrix_content's findings, as typed values.
+
+    Raises MatrixReadError if a file can't be read or parsed. A failure
+    computing the mitochondrial fraction doesn't raise: it's reported as
+    "mito_fraction_error", since everything else already succeeded.
+    """
     try:
-        n_barcodes = _count_gz_lines(paths["barcodes"])
-        n_features = _count_gz_lines(paths["features"])
+        n_barcodes = _count_lines(barcodes_path)
+        n_features = _count_lines(features_path)
     except Exception as exc:
-        add("file_integrity", "FAIL", f"Could not read barcodes/features files: {exc}")
-        return findings
-    add("file_integrity", "INFO", f"{n_barcodes} barcodes, {n_features} features readable")
+        raise MatrixReadError("file_integrity", f"Could not read barcodes/features files: {exc}") from exc
 
     try:
         import scipy.io
-        with gzip.open(paths["matrix"], "rb") as fh:
+        with _open(matrix_path, "rb") as fh:
             mat = scipy.io.mmread(fh).tocsc()
     except Exception as exc:
-        add("matrix_integrity", "FAIL", f"Could not parse matrix.mtx.gz: {exc}")
-        return findings
-    add("matrix_integrity", "INFO", f"matrix.mtx.gz parsed: shape {mat.shape}, nnz={mat.nnz}")
-
-    n_genes_mtx, n_cells_mtx = mat.shape
-    add("matrix_dimensions", "INFO",
-        f"matrix header shape={mat.shape} vs counted (features={n_features}, barcodes={n_barcodes})")
+        raise MatrixReadError("matrix_integrity", f"Could not parse {matrix_path.name}: {exc}") from exc
 
     counts_per_cell = np.asarray(mat.sum(axis=0)).ravel()
     genes_per_cell = np.asarray((mat > 0).sum(axis=0)).ravel()
     nonzero_counts = counts_per_cell[counts_per_cell > 0]
     nonzero_genes = genes_per_cell[genes_per_cell > 0]
+    n_empty = int((counts_per_cell == 0).sum())
+    stats: Dict[str, object] = {
+        "n_barcodes": n_barcodes,
+        "n_features": n_features,
+        "shape": [int(mat.shape[0]), int(mat.shape[1])],
+        "nnz": int(mat.nnz),
+        "n_nonempty_barcodes": int(len(nonzero_counts)),
+        "n_empty_barcodes": n_empty,
+        "frac_empty": n_empty / max(len(counts_per_cell), 1),
+        "median_umi_per_cell": float(np.median(nonzero_counts)) if len(nonzero_counts) else 0.0,
+        "median_genes_per_cell": float(np.median(nonzero_genes)) if len(nonzero_genes) else 0.0,
+        "median_mito_fraction": None,
+    }
+    try:
+        mito_frac = _mito_fraction(features_path, mat)
+        if mito_frac is not None:
+            nz_mito = mito_frac[counts_per_cell > 0]
+            if len(nz_mito):
+                stats["median_mito_fraction"] = float(np.median(nz_mito))
+    except Exception as exc:
+        stats["mito_fraction_error"] = f"Could not compute mitochondrial fraction: {exc}"
+    return stats
+
+
+def qc_matrix_content(
+    sample_id: str, barcodes_path: Path, features_path: Path, matrix_path: Path,
+    cellranger_output_class: str = "",
+) -> List[Finding]:
+    """file_integrity through mito_fraction, fused into one function/container:
+    they all operate on the same small in-memory `mat`/`counts_per_cell`, the
+    matrix files here are small, and scipy.io.mmread is cheap to re-run -- so
+    splitting further would only add JSON-serialization complexity for a
+    scipy sparse matrix with no clean encoding, for no real benefit. The
+    numbers come from matrix_stats()."""
+    findings: List[Finding] = []
+
+    def add(check: str, status: str, detail: str) -> None:
+        findings.append(make_finding(sample_id, sample_id, check, status, detail))
+
+    try:
+        stats = matrix_stats(barcodes_path, features_path, matrix_path)
+    except MatrixReadError as exc:
+        if exc.check == "matrix_integrity":
+            # Barcodes/features were readable before the matrix failed.
+            add("file_integrity", "INFO", "barcodes/features readable")
+        add(exc.check, "FAIL", str(exc))
+        return findings
+
+    n_barcodes, n_features = stats["n_barcodes"], stats["n_features"]
+    shape, nnz = tuple(stats["shape"]), stats["nnz"]
+    add("file_integrity", "INFO", f"{n_barcodes} barcodes, {n_features} features readable")
+    add("matrix_integrity", "INFO", f"{matrix_path.name} parsed: shape {shape}, nnz={nnz}")
+    add("matrix_dimensions", "INFO",
+        f"matrix header shape={shape} vs counted (features={n_features}, barcodes={n_barcodes})")
+
+    n_total = stats["n_empty_barcodes"] + stats["n_nonempty_barcodes"]
     # FAIL only for the completely-degenerate case (zero usable barcodes at
     # all -- there's nothing to report, not a graded judgment call).
-    add("matrix_metrics", "INFO" if len(nonzero_counts) else "FAIL",
-        f"median UMI/cell={np.median(nonzero_counts) if len(nonzero_counts) else 0:.0f}, "
-        f"median genes/cell={np.median(nonzero_genes) if len(nonzero_genes) else 0:.0f}, "
-        f"barcodes_with_zero_counts={(counts_per_cell == 0).sum()}/{len(counts_per_cell)}, nnz={mat.nnz}")
+    add("matrix_metrics", "INFO" if stats["n_nonempty_barcodes"] else "FAIL",
+        f"median UMI/cell={stats['median_umi_per_cell']:.0f}, "
+        f"median genes/cell={stats['median_genes_per_cell']:.0f}, "
+        f"barcodes_with_zero_counts={stats['n_empty_barcodes']}/{n_total}, nnz={nnz}")
 
     # No pass/fail judgment -- what fraction of empty barcodes is "expected"
     # for a raw vs. filtered matrix depends on the dataset and isn't something
     # we've validated a cutoff for. Report the fraction and the declared class
     # side by side; let whoever reads the report judge whether they agree.
-    frac_empty = (counts_per_cell == 0).sum() / max(len(counts_per_cell), 1)
     add("empty_barcode_check", "INFO",
-        f"{frac_empty:.1%} of {len(counts_per_cell)} barcodes have zero counts "
+        f"{stats['frac_empty']:.1%} of {n_total} barcodes have zero counts "
         f"(declared CellrangerOutputClass={cellranger_output_class!r})")
 
-    try:
-        mito_frac = _mito_fraction(paths["features"], mat)
-        if mito_frac is not None:
-            nz_mito = mito_frac[counts_per_cell > 0]
-            if len(nz_mito):
-                add("mito_fraction", "INFO", f"median mito fraction (non-empty barcodes)={np.median(nz_mito):.2%}")
-    except Exception as exc:
-        add("mito_fraction", "FAIL", f"Could not compute mitochondrial fraction: {exc}")
+    if "mito_fraction_error" in stats:
+        add("mito_fraction", "FAIL", stats["mito_fraction_error"])
+    elif stats["median_mito_fraction"] is not None:
+        add("mito_fraction", "INFO",
+            f"median mito fraction (non-empty barcodes)={stats['median_mito_fraction']:.2%}")
 
+    return findings
+
+
+# --- Orchestrator ---------------------------------------------------------
+
+
+def qc_processed_sample(
+    syn,
+    sample_id: str,
+    files: Dict[str, str],
+    work_dir: Path,
+    cellranger_output_class: str = "",
+) -> List[Finding]:
+    findings, complete = check_processed_completeness(sample_id, files)
+    if not complete:
+        return findings
+
+    dl_findings, paths = download_matrix_files(syn, sample_id, files, work_dir)
+    findings.extend(dl_findings)
+    if len(paths) < 3:
+        return findings
+
+    findings.extend(qc_matrix_content(
+        sample_id, paths["barcodes"], paths["features"], paths["matrix"], cellranger_output_class,
+    ))
     return findings

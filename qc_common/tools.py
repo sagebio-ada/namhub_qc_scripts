@@ -13,6 +13,8 @@ import tempfile
 from itertools import islice
 from pathlib import Path
 
+from .fq_lint import run_fq_lint as _run_fq_lint
+
 
 def need(*tools):
     """Exit with a clear message if any tool is not on PATH."""
@@ -32,17 +34,16 @@ def _run(cmd, log=None):
 def run_fq_lint(fastqs, out, fq="fq"):
     """`fq lint` on one FASTQ (single-end) or a pair, log -> `out` (<root>/fq_lint/<stage>/<sample>.fq_lint.txt).
 
-    Same options as nf-core (paired-name validator P001 off); fq logs to stderr.
+    Invocation and parsing live in qc_common.fq_lint, shared with
+    scrnaseq_qc_pipeline's own fq_lint check.
     """
     out = Path(out)
     if out.exists():
         return out
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
-    # fq exits non-zero when it finds invalid records; the log (with the ERROR lines) is the result.
-    res = subprocess.run([fq, "lint", "--disable-validator", "P001", *map(str, fastqs)],
-                         capture_output=True, text=True)
-    tmp.write_text(res.stdout + res.stderr)
+    text, _ = _run_fq_lint(fastqs, fq=fq)
+    tmp.write_text(text)
     tmp.rename(out)
     return out
 

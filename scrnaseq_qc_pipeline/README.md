@@ -166,7 +166,7 @@ Python runtime dependency, so this is safe).
 | `kraken_qc.py` | Wraps Kraken2 for species/contamination screening |
 | `matrix_qc.py` | CellRanger matrix.mtx.gz + barcodes/features sanity checks |
 | `multiqc_qc.py` | Wraps MultiQC for an optional aggregated HTML report (`--multiqc`) |
-| `qc_common.py` | Shared finding format, CSV report writer |
+| `scrnaseq_common.py` | Shared finding format, CSV report writer (renamed from `qc_common.py` — that name now belongs to the repo-root `qc_common/` package shared across pipelines; see the top-level README) |
 
 ## A note on preliminary status
 

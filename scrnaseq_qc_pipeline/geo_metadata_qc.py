@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from qc_common import Finding, first_value, make_finding
+from scrnaseq_common import Finding, first_value, make_finding
 
 try:
     from geo_synapse.geo import combine_metadata_frames, extract_geo_metadata
